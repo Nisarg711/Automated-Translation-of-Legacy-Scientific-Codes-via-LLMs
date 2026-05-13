@@ -1,0 +1,147 @@
+Generated System Prompt:
+================================================================================
+Translate the given C code into Python while maintaining its original functionality and structure. You are expected to act as a code translation expert, ensuring that the translated code is accurate, reliable, and follows modern Python practices and idioms.
+
+The translation should preserve variable names where possible and consider language-specific differences in data types, I/O operations, memory management, and array handling. Be aware of the Dijkstra's algorithm implemented in the code and handle its specific patterns and structures accordingly.
+
+When translating, pay special attention to potential pitfalls such as edge cases, integer overflows, and infinite loops. Ensure that the translated code handles these cases correctly and includes comments to explain complex logic where necessary.
+
+The input code uses an adjacency matrix representation of a graph, so the translated code should also utilize a suitable data structure for this purpose. Additionally, the original code uses scanf for input and printf for output; the translated code should use equivalent Python functions for these operations.
+
+Provide the translated code in a single code block, without any additional explanations or comments outside of the code block itself. Accuracy and reliability are of utmost importance; strive for near 100% accuracy in the translation, minimizing any loss of meaning or functionality.
+
+Handle all aspects of the translation, including but not limited to, the main function, the dijkstra function, and the minDistance function, ensuring that the translated code is well-structured, readable, and maintainable.
+
+The translated code should be able to handle inputs and produce outputs in the same format as the original C code. Ensure that all input values are correctly processed and that the output reflects the expected results of Dijkstra's algorithm.
+
+Implement the translation with the goal of achieving a semantically equivalent Python version of the given C code, taking into account Python's unique features and best practices. The output should be a single block of Python code that accurately represents the original C code's functionality and behavior. 
+
+```python
+```
+
+The c code to translate:
+#include <stdio.h>
+#include <limits.h>
+#define MAX_V 100
+
+int minDistance(int dist[], int visited[], int V) {
+    int min = INT_MAX, min_index = 0;
+
+    for (int v = 0; v < V; v++) {
+        if (!visited[v] && dist[v] <= min) {
+            min = dist[v];
+            min_index = v;
+        }
+    }
+    return min_index;
+}
+
+void dijkstra(int graph[MAX_V][MAX_V], int src, int V) {
+    int dist[MAX_V];
+    int visited[MAX_V] = {0};
+
+    for (int i = 0; i < V; i++)
+        dist[i] = INT_MAX;
+
+    dist[src] = 0;
+
+    for (int count = 0; count < V - 1; count++) {
+        int u = minDistance(dist, visited, V);
+        visited[u] = 1;
+
+        for (int v = 0; v < V; v++) {
+            if (!visited[v] && graph[u][v] &&
+                dist[u] != INT_MAX &&
+                dist[u] + graph[u][v] < dist[v]) {
+
+                dist[v] = dist[u] + graph[u][v];
+            }
+        }
+    }
+
+    for (int i = 0; i < V; i++) {
+        if (dist[i] == INT_MAX)
+            printf("%d INF\n", i);
+        else
+            printf("%d %d\n", i, dist[i]);
+    }
+}
+
+int main() {
+    int V;
+    scanf("%d", &V);
+    
+    int graph[MAX_V][MAX_V];
+    for (int i = 0; i < V; i++) {
+        for (int j = 0; j < V; j++) {
+            scanf("%d", &graph[i][j]);
+        }
+    }
+    
+    int src;
+    scanf("%d", &src);
+
+    dijkstra(graph, src, V);
+    return 0;
+}
+
+================================================================================
+
+
+
+
+
+
+
+Iterative Feedback Loop Output:
+
+================================================================================
+Attempt 1/5
+================================================================================
+
+❌ 5 test(s) failed. Running error correction...
+
+Navigator Analysis:
+```json
+{
+  "error_summary": "Translated code is not reading input correctly",
+  "root_cause": "Input parsing logic differs between legacy and translated code",
+  "fix_hints": [
+    "Check how input is being read and parsed in both legacy and translated code",
+    "Use a loop to read all the input at once instead of reading it line by line",
+    "Verify that input is being read in the same order and format as the legacy code"
+  ]
+}
+```
+
+✓ Code updated. Re-running tests...
+
+================================================================================
+Attempt 2/5
+================================================================================
+
+❌ 5 test(s) failed. Running error correction...
+
+Navigator Analysis:
+```json
+{
+  "error_summary": "The translated code does not correctly implement Dijkstra's algorithm, unlike the legacy code. Instead, it uses a different approach to find the shortest paths between all pairs of nodes, but it does not consider the source node specified in the input. Additionally, the translated code does not handle unreachable nodes correctly.",
+  "root_cause": "The translated code has a completely different logic and algorithm than the legacy code. The translated code is trying to find the shortest path between all pairs of nodes by iteratively updating the graph, whereas the legacy code uses Dijkstra's algorithm to find the shortest path from a given source node to all other nodes.",
+  "fix_hints": [
+    "Implement Dijkstra's algorithm in the translated code to find the shortest path from the given source node to all other nodes.",
+    "Use a priority queue or an array to keep track of the nodes with the minimum distance from the source node.",
+    "Iterate through the graph to update the distances of the neighboring nodes of the current node.",
+    "Handle unreachable nodes by checking if the distance is still infinity after the algorithm finishes."
+  ]
+}
+```
+
+✓ Code updated. Re-running tests...
+
+================================================================================
+Attempt 3/5
+================================================================================
+
+✅ All tests passed!
+
+🎉 Translation successful!

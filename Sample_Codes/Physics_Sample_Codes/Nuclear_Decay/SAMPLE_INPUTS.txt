@@ -1,0 +1,42 @@
+Sample Input 1 - Euler Method with symbols:
+==========================================
+1
+1000
+5
+0.5
+10
+y
+1
+1
+
+Sample Input 2 - Runge-Kutta 2nd order without symbols:
+========================================================
+2
+500
+15
+5
+2000
+n
+
+Sample Input 3 - Runge-Kutta 4th order with symbols:
+====================================================
+3
+2000
+10
+1
+50
+y
+2
+2
+
+
+EXPLANATION:
+============
+Prompt 1: Method (1=Euler, 2=RK2, 3=RK4)
+Prompt 2: Initial number of nuclei
+Prompt 3: Time constant (tau)
+Prompt 4: Time step (dt)
+Prompt 5: Total time
+Prompt 6: Set line, symbol? (y or n)
+Prompt 7: If yes to prompt 6: line number
+Prompt 8: If yes to prompt 6: symbol number

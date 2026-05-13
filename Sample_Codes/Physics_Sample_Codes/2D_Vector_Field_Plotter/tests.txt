@@ -1,0 +1,5 @@
+4
+data1.txt\n1.0 0.1
+data1.txt\n2.5 0.5
+data2.txt\n0.5
+data3.txt\n2.0 0.2
