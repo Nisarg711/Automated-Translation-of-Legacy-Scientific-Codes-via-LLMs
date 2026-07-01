@@ -1,5 +1,6 @@
 import streamlit as st
 import uuid
+from tempbackend import app
 
 
 st.set_page_config(page_title="Automated Legacy Code Translator", layout="wide")
@@ -53,34 +54,24 @@ def load_translation(thread_id):
     return st.session_state['translation_threads'].get(thread_id, {})
 
 
-def translate_code(code: str, source_lang: str, target_lang: str, thread_id: str) -> str:
-    """
-    Placeholder translation call — swap this whole function body for the real pipeline.
-
-    TODO (backend integration):
-      This will become a single call into your LangGraph app — one graph,
-      not a separate RAG step + separate generation step. Retrieval,
-      generation, validation, and the fix-loop are all nodes *inside* that
-      one graph; this function just invokes it and unpacks the result, e.g.:
-
-          res = app.invoke(
-              {"code": code, "source_lang": source_lang, "target_lang": target_lang},
-              config={"configurable": {"thread_id": thread_id}}
-          )
-          return res["translated_code"]
-
-      Since retrieval happens inside the graph (not here in the frontend),
-      if you want the "Retrieved errors & fixes" panel to show anything,
-      the graph's final state needs to carry that info back out too —
-      e.g. res["retrieved_pairs"] — and you'd set
-      st.session_state['errors_fixes'] from that after the invoke call.
-      Without that, the panel has nothing to display, since the frontend
-      only ever sees what `res` hands back.
-    """
-    return (
-        f"# TODO: backend not connected yet.\n"
-        f"# Will translate the {source_lang} code on the left into {target_lang} here.\n"
+def translate_code(code, source_lang, target_lang, thread_id):
+    result = app.invoke(
+        {
+            "input_code": code,
+            "inp_lang": source_lang.lower(),
+            "target_lang": target_lang.lower(),
+        },
+        config={
+            "configurable": {
+                "thread_id": thread_id,
+                "provider": "groq",
+                "model_id": "llama-3.3-70b-versatile",
+                "tests": [],   # placeholder until UI supports test input
+            }
+        }
     )
+    # TODO: also pull result["retrieved_pairs"] here once RAG is in
+    return result["translated_code"]
 
 
 # ------------------------------------------------------------------------------------
@@ -164,7 +155,7 @@ with tab_slot:
                 st.session_state['source_lang_select'] = guessed_lang
                 st.caption(f"Detected source language from extension: **{guessed_lang}** "
                            f"(adjust the dropdown above if this is wrong)")
-                st.rerun()
+                st.rerun()  #st.session_state values absolutely persist when you call st.rerun()
             st.code(uploaded_code, language=ext if ext != "f90" else "fortran")
 #plus both selectboxes inside it. This code runs after the upload detection, but visually 
 # it still appears above the tabs because lang_slot was created first cuz we created containerss
