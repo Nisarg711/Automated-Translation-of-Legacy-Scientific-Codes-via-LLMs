@@ -33,6 +33,8 @@ class TranslationState(TypedDict):
     attempt_count: int
     max_attempts: int
     passed: bool
+    legacy_output:str
+    translated_output:str
 
 
 # Step 1 — Define your State
@@ -282,6 +284,14 @@ def setup_node(state: TranslationState, config: RunnableConfig) -> dict:
         "max_attempts": config["configurable"].get("max_attempts", 5),  # default matches your notebook's max_attempts=5
     }
 
+def parse_tests_from_string(content: str) -> list:
+    lines = content.splitlines(keepends=True) 
+    if not lines: return []
+    t = int(lines[0].strip())
+    tests = []
+    for i in range(1, t + 1):
+        tests.append(lines[i].strip().replace('\\n', '\n') + '\n')
+    return tests
 
 def translate_node(state: TranslationState, config: RunnableConfig) -> dict:
     # Pull static config (provider, model_id) the same way you'll pull tests later
@@ -388,6 +398,8 @@ def run_tests_node(state: TranslationState, config: RunnableConfig) -> dict:
         return {"feedback": [], "passed": True}
 
     feedback = []
+    legacy_blocks = []
+    translated_blocks = []
     for i, input_data in enumerate(tests, 1):
         legacy_out, _ = run_program(state["inp_lang"], state["input_path"], input_data)
         translated_out, err = run_program(state["target_lang"], state["working_filepath"], input_data)
@@ -395,6 +407,8 @@ def run_tests_node(state: TranslationState, config: RunnableConfig) -> dict:
 
         norm_legacy = normalize(legacy_out)
         norm_translated = normalize(translated_out)
+        legacy_blocks.append(f"--- Test {i} ---\n{norm_legacy}")
+        translated_blocks.append(f"--- Test {i} ---\n{norm_translated}")
 
         if err or norm_legacy != norm_translated:
             def truncate_text(text, limit=1000):
@@ -413,6 +427,8 @@ def run_tests_node(state: TranslationState, config: RunnableConfig) -> dict:
     return {
         "feedback": feedback,
         "passed": len(feedback) == 0,
+        "legacy_output":"\n".join(legacy_blocks),
+        "translated_output":"\n".join(translated_blocks)
     }
 
 def navigator_node(state: TranslationState, config: RunnableConfig) -> dict:

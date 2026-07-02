@@ -1,7 +1,7 @@
 import streamlit as st
 import uuid
 from tempbackend import app
-
+from tempbackend import parse_tests_from_string
 
 st.set_page_config(page_title="Automated Legacy Code Translator", layout="wide")
 
@@ -26,8 +26,10 @@ def new_translation_session():
     add_thread(thread_id, st.session_state['title'])
     st.session_state['source_code'] = ""
     st.session_state['translated_code'] = ""
+    st.session_state['tests']=[]
     st.session_state['errors_fixes'] = []  # placeholder: will hold RAG-retrieved (error, fix) pairs
-
+    st.session_state['legacy_output']=""
+    st.session_state['translated_output']=""
 
 def add_thread(thread_id, title="New Translation"):
     if thread_id not in st.session_state['translation_threads']:
@@ -37,6 +39,8 @@ def add_thread(thread_id, title="New Translation"):
             "target_lang": None,
             "source_code": "",
             "translated_code": "",
+            "legacy_output":"",
+            "translated_output":""
         }
 
 
@@ -54,24 +58,27 @@ def load_translation(thread_id):
     return st.session_state['translation_threads'].get(thread_id, {})
 
 
-def translate_code(code, source_lang, target_lang, thread_id):
+def translate_code(code, source_lang, target_lang, thread_id,tests=[])->dict:
     result = app.invoke(
         {
             "input_code": code,
             "inp_lang": source_lang.lower(),
             "target_lang": target_lang.lower(),
+            "legacy_output": "",     # NEW
+            "translated_output": "", # NEW
         },
         config={
             "configurable": {
                 "thread_id": thread_id,
                 "provider": "groq",
                 "model_id": "llama-3.3-70b-versatile",
-                "tests": [],   # placeholder until UI supports test input
+                "tests": tests,   # placeholder until UI supports test input
             }
         }
     )
+    print(result)
     # TODO: also pull result["retrieved_pairs"] here once RAG is in
-    return result["translated_code"]
+    return result
 
 
 # ------------------------------------------------------------------------------------
@@ -98,12 +105,27 @@ if 'last_uploaded_name' not in st.session_state:
 if 'errors_fixes' not in st.session_state:
     st.session_state['errors_fixes'] = []  # placeholder for RAG-retrieved error/fix pairs
 
+if 'tests' not in st.session_state:
+    st.session_state['tests']=[]
+
+if 'attempt_count' not in st.session_state:
+    st.session_state['attempt_count'] = 0
+
+if 'passed' not in st.session_state:
+    st.session_state['passed'] = None
+
+if 'legacy_output' not in st.session_state:
+    st.session_state['legacy_output']=""
+
+if 'translated_output' not in st.session_state:
+    st.session_state['translated_output']=""
+
 add_thread(st.session_state['thread_id'], st.session_state['title'])
 
 # ------------------------------------------------------------------------------------
 # Sidebar UI
 # ------------------------------------------------------------------------------------
-st.sidebar.title("Automated Legacy Code Translator")
+st.sidebar.title("Automated Legacy Code Translator & Executor")
 
 if st.sidebar.button("➕ New Translation"):
     new_translation_session()
@@ -145,6 +167,15 @@ with tab_slot:
             "Drop a code file",
             type=list(EXT_TO_LANG.keys()),
         )
+        uploaded_test_file=st.file_uploader(
+            "Drop a test file",
+            type=".txt"
+        )
+        uploaded_test=None
+        if uploaded_test_file is not None:
+            uploaded_test=uploaded_test_file.read().decode("utf-8")
+            st.session_state['tests']=parse_tests_from_string(uploaded_test)
+            st.caption(f"✅ {len(st.session_state['tests'])} test case(s) loaded")
         uploaded_code = None
         if uploaded_file is not None:
             uploaded_code = uploaded_file.read().decode("utf-8")
@@ -183,9 +214,13 @@ if translate_clicked:
         # TODO: swap for st.write_stream(...) once the LangGraph app streams tokens,
         # the same way your chatbot does with stream_mode="messages"
         result = translate_code(
-            active_code, source_lang, target_lang, st.session_state['thread_id']
+            active_code, source_lang, target_lang, st.session_state['thread_id'],st.session_state['tests']
         )
-        st.session_state['translated_code'] = result
+        st.session_state['translated_code'] = result["translated_code"]
+        st.session_state['attempt_count'] = result["attempt_count"]
+        st.session_state['passed'] = result["passed"]
+        st.session_state['legacy_output']=result["legacy_output"]
+        st.session_state['translated_output']=result["translated_output"]
 
     title = f"{source_lang} → {target_lang}"
     st.session_state['title'] = title
@@ -195,6 +230,9 @@ if translate_clicked:
         "target_lang": target_lang,
         "source_code": active_code,
         "translated_code": st.session_state['translated_code'],
+        "tests":st.session_state['tests'],
+        "attempt_count":st.session_state["attempt_count"],
+        "passed":st.session_state['passed']
     }
     st.rerun()
 
@@ -215,7 +253,26 @@ if st.session_state['translated_code']:
             data=st.session_state['translated_code'],
             file_name=f"translated.{target_lang.lower()}",
         )
+    if st.session_state["passed"]:
+        st.success(f"✅ Passed in {st.session_state['attempt_count']} correction attempt(s)")
+    else:
+        st.warning(f"⚠️ Max attempts reached ({st.session_state['attempt_count']}), translation may have issues")
 
+    st.divider()
+    leg_out_col,trans_out_col=st.columns(2)
+    with leg_out_col:
+        st.subheader("Output of Legacy Code")
+        if st.session_state['legacy_output']:
+            st.code(st.session_state['legacy_output'])
+        else:
+            st.info("No test cases provided — upload a test file to see execution output")
+
+    with trans_out_col:
+        st.subheader("Output of Translated Code")
+        if st.session_state['translated_output']:
+            st.code(st.session_state['translated_output'])
+        else:
+            st.info("No test cases provided — upload a test file to see execution output")
 # ------------------------------------------------------------------------------------
 # Errors & Fixes panel — placeholder for RAG-retrieved context
 # ------------------------------------------------------------------------------------
