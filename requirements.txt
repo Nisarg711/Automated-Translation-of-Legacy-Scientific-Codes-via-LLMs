@@ -5,5 +5,7 @@ langchain_groq
 langchain_core
 google
 huggingface_hub
-langchain_core
 openai
+python-dotenv
+groq
+psutil

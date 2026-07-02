@@ -72,6 +72,7 @@ def translate_code(code, source_lang, target_lang, thread_id,tests=[])->dict:
                 "thread_id": thread_id,
                 "provider": "groq",
                 "model_id": "llama-3.3-70b-versatile",
+                # "model_id": "llama-3.1-8b-instant",
                 "tests": tests,   # placeholder until UI supports test input
             }
         }
