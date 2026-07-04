@@ -36,5 +36,166 @@ The system was evaluated against multiple open-weight and proprietary models uti
 ### 2. Domain-Specific Physics Simulation (`nuclear_decay.f`)
 Numerically solves $\frac{dN}{dt} = -\frac{N}{\tau}$ across multiple numerical approximation methods (Euler, 2nd & 4th order Runge-Kutta)[cite: 3]:
 * **gpt-4o / llama-3.3-70b-versatile:** Successfully translated with strict byte-for-byte alignment to the underlying mathematical constants and float precision[cite: 3].
+---
+### Approach used
+- Vector store: PGVector on NeonDB
+- Embeddings: sentence-transformers/all-MiniLM-L6-v2 via HuggingFace
+- Retrieval strategy: metadata pre-filter (language pair) + dense retrieval + MMR
+- Storage pattern: parent document retriever (embed error context, retrieve full pair)
+# 📚 Parent Document Retriever
+
+## Why not Generic RAG?
+limitation of generic rag approach:
+
+- Small chunks improve retrieval accuracy.
+- Small chunks often **lack enough context** for the LLM to generate high-quality answers.
 
 ---
+
+# Parent Document Retriever
+
+A **Parent Document Retriever** separates:
+
+- **What is searched against**
+- **What is returned to the LLM**
+
+Instead of storing only one chunk, it maintains two representations:
+
+- **Child Documents** → Used for semantic search (errors basically)
+- **Parent Documents** → Returned as context    (The entire {error, fix} pairs)
+
+```text
+Child Chunk
+      │
+      ▼
+Embed Child Chunk
+      │
+      ▼
+Vector Store (Searchable)
+
+──────────────────────────────────────
+
+Full Parent Document
+      │
+      ▼
+Document Store (Keyed by Parent ID)
+```
+
+---
+
+## Retrieval Pipeline
+
+```text
+User Query
+      │
+      ▼
+Embed Query
+      │
+      ▼
+Search Child Vectors
+      │
+      ▼
+Retrieve Parent IDs
+      │
+      ▼
+Fetch Full Parent Documents
+      │
+      ▼
+Provide Rich Context to the LLM
+```
+
+---
+
+# Generic RAG vs Parent Retriever
+
+| Generic RAG | Parent Retriever |
+|-------------|------------------|
+| Searches chunks | Searches child chunks |
+| Returns the same chunk | Returns the full parent document |
+| High precision, low context | High precision with rich context |
+| May lose surrounding information | Preserves complete context |
+
+---
+
+## Child Document (Search Target)
+
+This contains only the **navigator analysis**.
+
+```text
+navigator_analysis
+```
+
+This is embedded and stored in the **vector database** because it best represents the error semantics.
+
+---
+
+## Parent Document (Returned Context)
+
+The parent document contains everything needed to solve a similar issue.
+
+```text
+{
+    navigator_analysis,
+    working_fix,
+    language_pair,
+    attempt_context
+}
+```
+
+This is stored inside the **Document Store**, indexed using the parent ID.
+
+---
+
+# Retrieval Flow
+
+When a new error arrives:
+
+```text
+New Navigator Analysis
+           │
+           ▼
+Generate Embedding
+           │
+           ▼
+Search Similar Navigator Analyses
+           │
+           ▼
+Obtain Matching Parent IDs
+           │
+           ▼
+Retrieve Complete Parent Documents
+           │
+           ▼
+Send Rich Context to the LLM
+```
+
+---
+
+# Why This Matters
+
+Suppose the user encounters a new compiler or runtime error.
+
+The goal is **not** to retrieve an isolated chunk.
+
+Instead:
+
+1. Find previous errors with **similar navigator analyses**.
+2. Retrieve the **entire debugging context** that solved those errors.
+3. Provide the LLM with:
+   - Original error analysis
+   - Working fix
+   - Programming language pair
+   - Previous debugging attempts
+
+This enables the model to reason using complete historical solutions instead of incomplete fragments.
+
+---
+
+# Key Insight
+
+> **Search against the child. Return the parent.**
+
+Searching against small child chunks provides **better retrieval precision**, while returning the larger parent document provides **better reasoning context** for the LLM.
+
+
+

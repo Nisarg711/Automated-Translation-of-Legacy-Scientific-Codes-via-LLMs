@@ -9,3 +9,7 @@ openai
 python-dotenv
 groq
 psutil
+psycopg2-binary
+pgvector
+sentence-transformers
+langchain_huggingface

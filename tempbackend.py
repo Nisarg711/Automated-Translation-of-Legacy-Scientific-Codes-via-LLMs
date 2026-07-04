@@ -6,6 +6,7 @@ from langgraph.graph.message import add_messages
 from langgraph.graph import START, END,StateGraph
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
+from langchain_huggingface import HuggingFaceEmbeddings
 from dotenv import load_dotenv  
 import os
 import re
@@ -19,6 +20,12 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from groq import Groq
 from langgraph.checkpoint.memory import InMemorySaver
+import psycopg2
+from pgvector.psycopg2 import register_vector
+from sentence_transformers import SentenceTransformer
+import numpy as np
+import json
+import uuid
 load_dotenv()
 
 class TranslationState(TypedDict):
@@ -35,11 +42,25 @@ class TranslationState(TypedDict):
     passed: bool
     legacy_output:str
     translated_output:str
+    retrieved_context:list
 
 
 # Step 1 — Define your State
 # Before any nodes, decide what data flows through the graph. Looking at your run_benchmark, the things that get read/written across phases are: input_code, inp_lang, target_lang, translated_code, test_results/feedback, attempt_count, max_attempts, passed. Define this as a TypedDict (this is your single source of truth the whole graph reads/writes — same role as results dict in your notebook, but shared across nodes instead of local to one function).
 import tempfile
+
+
+def get_db_connection():
+    conn=psycopg2.connect("postgresql://neondb_owner:npg_I3xR9EkyMSdt@ep-cool-sky-atnv0iv6-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+    register_vector(conn)  # critical — tells psycopg2 how to handle vector type
+    return conn
+
+embedding_model =HuggingFaceEmbeddings(model="all-MiniLM-L6-v2")
+def embed_text(text: str) -> np.ndarray:
+    embedding = embedding_model.encode(text)
+    return embedding
+
+# embedding = np.array(embed_text(navigator_analysis))
 
 def get_working_filepath(target_lang: str) -> str:  #This is used for temporary file creation on server side
     ext = get_file_extension(target_lang)
@@ -431,6 +452,160 @@ def run_tests_node(state: TranslationState, config: RunnableConfig) -> dict:
         "translated_output":"\n".join(translated_blocks)
     }
 
+
+def store_experience(
+    language_pair: str,
+    navigator_analysis: str,
+    error_snippet: str,
+    working_fix_snippet: str,
+    test_feedback: str,
+    attempt_number: int
+) -> None:
+    embedding = np.array(embed_text(navigator_analysis))  # embed the child chunk
+    
+    '''
+    runs only on successful fix, writes the (navigator_analysis, fixed_code_diff) pair to vector store.
+    Second, conn.commit() is inside the try block and conn.close() is in finally — this ensures the connection 
+    always closes even if an exception occurs mid-insert, preventing connection leaks, which matter once 
+    this is deployed on Render and handling multiple users.
+    '''
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Step 1: insert parent document first, get back its ID
+            cur.execute("""
+                INSERT INTO parent_documents 
+                    (language_pair, navigator_analysis, error_snippet, 
+                     working_fix_snippet, test_feedback, attempt_number)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (language_pair, navigator_analysis, error_snippet,
+                  working_fix_snippet, test_feedback, attempt_number))
+            
+            parent_id = cur.fetchone()[0]
+            
+            # Step 2: insert child vector with reference to parent
+            cur.execute("""
+    INSERT INTO child_vectors 
+        (parent_id, language_pair, navigator_analysis, embedding)
+    VALUES (%s, %s, %s, %s::vector)
+""", (parent_id, language_pair, navigator_analysis, embedding.tolist()))
+            
+            conn.commit()
+    finally:
+        conn.close()
+
+def mmr_rerank(
+    candidates: list,      # list of (parent_id, nav_analysis, embedding, similarity)
+    query_embedding: np.ndarray,
+    mmr_k: int,
+    mmr_lambda: float
+) -> list:
+    
+    if len(candidates) <= mmr_k:
+        return candidates  # not enough candidates to rerank
+    
+    # extract embeddings as numpy array for vectorized similarity computation
+    candidate_embeddings = np.array([c[2] for c in candidates])
+    
+    selected_indices = []
+    remaining_indices = list(range(len(candidates)))
+    
+    for _ in range(mmr_k):
+        best_score = -np.inf
+        best_idx = None
+        
+        for idx in remaining_indices:
+            # similarity to query (already computed during retrieval)
+            query_sim = candidates[idx][3]  # similarity score from SQL
+            
+            # max similarity to already selected candidates
+            if selected_indices:
+                selected_embeddings = candidate_embeddings[selected_indices]
+                redundancy = np.max(
+                    candidate_embeddings[idx] @ selected_embeddings.T
+                )  # dot product = cosine similarity since embeddings are normalized
+            else:
+                redundancy = 0  # no selected yet, no redundancy penalty
+            
+            mmr_score = mmr_lambda * query_sim - (1 - mmr_lambda) * redundancy
+            
+            if mmr_score > best_score:
+                best_score = mmr_score
+                best_idx = idx
+        
+        selected_indices.append(best_idx)
+        remaining_indices.remove(best_idx)
+    
+    return [candidates[i] for i in selected_indices]
+
+
+def retrieve_similar_experiences(
+    language_pair: str,
+    navigator_analysis: str,
+    k: int = 5,           # number of candidates before MMR reranking
+    mmr_k: int = 3,       # final number after MMR reranking
+    mmr_lambda: float = 0.5  # balance between similarity and diversity
+) -> list[dict]:
+    #MMR: maximal Marginal relevance
+    #<=> is PGVector's cosine distance operator — lower value means more similar. 
+    # 1 - (embedding <=> query) converts it to cosine similarity — higher value means more similar. 
+    # Both are used here for clarity: ordering by distance, returning similarity score.
+
+    query_embedding = np.array(embed_text(navigator_analysis))
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Step 1: metadata pre-filter + vector similarity search
+            # Only searches within the same language pair — hard constraint
+            cur.execute("""
+    SELECT 
+        c.parent_id,
+        c.navigator_analysis,
+        c.embedding,
+        1 - (c.embedding <=> %s::vector) AS similarity
+    FROM child_vectors c
+    WHERE c.language_pair = %s
+    ORDER BY c.embedding <=> %s::vector
+    LIMIT %s
+""", (query_embedding.tolist(), language_pair, query_embedding.tolist(), k))
+            
+            candidates = cur.fetchall()
+            
+            if not candidates:
+                return []
+            
+            # Step 2: MMR reranking over candidates
+            # TODO: apply MMR here — we'll implement this as a separate function
+            selected = mmr_rerank(candidates, query_embedding, mmr_k, mmr_lambda)
+            
+            # Step 3: fetch full parent documents for selected candidates
+            parent_ids = [c[0] for c in selected]
+            cur.execute("""
+                SELECT 
+                    language_pair, navigator_analysis, error_snippet,
+                    working_fix_snippet, test_feedback, attempt_number
+                FROM parent_documents
+                WHERE id = ANY(%s::uuid[])
+            """, (parent_ids,))
+            
+            parents = cur.fetchall()
+            
+            return [
+                {
+                    "language_pair": p[0],
+                    "navigator_analysis": p[1],
+                    "error_snippet": p[2],
+                    "working_fix_snippet": p[3],
+                    "test_feedback": p[4],
+                    "attempt_number": p[5],
+                }
+                for p in parents
+            ]
+    finally:
+        conn.close()
+        
 def navigator_node(state: TranslationState, config: RunnableConfig) -> dict:
     provider = config["configurable"]["provider"]
     model_id = config["configurable"]["model_id"]
