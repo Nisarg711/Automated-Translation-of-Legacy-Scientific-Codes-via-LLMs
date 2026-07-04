@@ -51,7 +51,7 @@ import tempfile
 
 
 def get_db_connection():
-    conn=psycopg2.connect("postgresql://neondb_owner:npg_I3xR9EkyMSdt@ep-cool-sky-atnv0iv6-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+    conn=psycopg2.connect(os.environ["NEON_DATABASE_URL"])
     register_vector(conn)  # critical — tells psycopg2 how to handle vector type
     return conn
 
