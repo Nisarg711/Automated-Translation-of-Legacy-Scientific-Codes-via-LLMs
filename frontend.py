@@ -61,17 +61,21 @@ def load_translation(thread_id):
 def translate_code(code, source_lang, target_lang, thread_id,tests=[])->dict:
     result = app.invoke(
         {
-            "input_code": code,
-            "inp_lang": source_lang.lower(),
-            "target_lang": target_lang.lower(),
-            "legacy_output": "",     # NEW
-            "translated_output": "", # NEW
+        "input_code": code,
+        "inp_lang": source_lang.lower(),
+        "target_lang": target_lang.lower(),
+        "legacy_output": "",
+        "translated_output": "",
+        "retrieved_context": [],    # NEW
+        "error_snippet": "",        # NEW
+        "last_feedback": [],        # NEW
         },
         config={
             "configurable": {
                 "thread_id": thread_id,
                 "provider": "groq",
-                "model_id": "llama-3.3-70b-versatile",
+                # "model_id": "llama-3.3-70b-versatile",
+                "model_id":"openai/gpt-oss-120b",
                 # "model_id": "llama-3.1-8b-instant",
                 "tests": tests,   # placeholder until UI supports test input
             }

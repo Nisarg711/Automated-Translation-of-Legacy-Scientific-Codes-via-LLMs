@@ -28,6 +28,18 @@ import json
 import uuid
 load_dotenv()
 
+def get_db_connection():
+    conn=psycopg2.connect(os.environ["NEON_DATABASE_URL"])
+    register_vector(conn)  # critical — tells psycopg2 how to handle vector type
+    return conn
+
+embedding_model =HuggingFaceEmbeddings(model="all-MiniLM-L6-v2")
+
+def embed_text(text: str) -> np.ndarray:
+    embedding = embedding_model.embed_query(text)
+    return embedding
+
+
 class TranslationState(TypedDict):
     input_code: str
     inp_lang: str
@@ -43,24 +55,13 @@ class TranslationState(TypedDict):
     legacy_output:str
     translated_output:str
     retrieved_context:list
+    error_snippet: str   # extracted from navigator's relevant_lines, used by store_node
+    last_feedback: list   # stores feedback from last failed attempt before fix worked
 
 
 # Step 1 — Define your State
 # Before any nodes, decide what data flows through the graph. Looking at your run_benchmark, the things that get read/written across phases are: input_code, inp_lang, target_lang, translated_code, test_results/feedback, attempt_count, max_attempts, passed. Define this as a TypedDict (this is your single source of truth the whole graph reads/writes — same role as results dict in your notebook, but shared across nodes instead of local to one function).
 import tempfile
-
-
-def get_db_connection():
-    conn=psycopg2.connect(os.environ["NEON_DATABASE_URL"])
-    register_vector(conn)  # critical — tells psycopg2 how to handle vector type
-    return conn
-
-embedding_model =HuggingFaceEmbeddings(model="all-MiniLM-L6-v2")
-def embed_text(text: str) -> np.ndarray:
-    embedding = embedding_model.encode(text)
-    return embedding
-
-# embedding = np.array(embed_text(navigator_analysis))
 
 def get_working_filepath(target_lang: str) -> str:  #This is used for temporary file creation on server side
     ext = get_file_extension(target_lang)
@@ -248,6 +249,17 @@ def parse_tests(test_file):
         tests.append(lines[i].strip().replace('\\n', '\n') + '\n')
     return tests
 
+def parse_tests_from_string(content: str) -> list:
+    lines = content.splitlines(keepends=True) 
+    if not lines: return []
+    t = int(lines[0].strip())
+    tests = []
+    for i in range(1, t + 1):
+        tests.append(lines[i].strip().replace('\\n', '\n') + '\n')
+    return tests
+
+
+
 def run_program(language, filepath, input_data, timeout=5):
     """A unified runner that returns (output, error_message)."""
     lang = language.lower()
@@ -305,23 +317,10 @@ def setup_node(state: TranslationState, config: RunnableConfig) -> dict:
         "max_attempts": config["configurable"].get("max_attempts", 5),  # default matches your notebook's max_attempts=5
     }
 
-def parse_tests_from_string(content: str) -> list:
-    lines = content.splitlines(keepends=True) 
-    if not lines: return []
-    t = int(lines[0].strip())
-    tests = []
-    for i in range(1, t + 1):
-        tests.append(lines[i].strip().replace('\\n', '\n') + '\n')
-    return tests
-
 def translate_node(state: TranslationState, config: RunnableConfig) -> dict:
     # Pull static config (provider, model_id) the same way you'll pull tests later
     provider = config["configurable"]["provider"]
     model_id = config["configurable"]["model_id"]
-
-    # TODO: build the prompt — this is your existing Phase 1 prompt string,
-    # verbatim, just substitute state["inp_lang"], state["target_lang"],
-    # and state["input_code"] instead of the local variables you used before
     inp_lng=state['inp_lang']
     target_lng=state['target_lang']
     input_code=state['input_code']
@@ -448,6 +447,7 @@ def run_tests_node(state: TranslationState, config: RunnableConfig) -> dict:
     return {
         "feedback": feedback,
         "passed": len(feedback) == 0,
+        "last_feedback": feedback if len(feedback) > 0 else state.get("last_feedback", []),
         "legacy_output":"\n".join(legacy_blocks),
         "translated_output":"\n".join(translated_blocks)
     }
@@ -494,6 +494,7 @@ def store_experience(
             conn.commit()
     finally:
         conn.close()
+
 
 def mmr_rerank(
     candidates: list,      # list of (parent_id, nav_analysis, embedding, similarity)
@@ -605,7 +606,83 @@ def retrieve_similar_experiences(
             ]
     finally:
         conn.close()
+
+def retrieve_node(state:TranslationState,config:RunnableConfig)->dict:
+    '''
+     runs before navigator, queries vector store, injects results into state
+    '''
+    language_pair = f"{state['inp_lang']}→{state['target_lang']}"
+    
+    # use the current navigator analysis as query — but wait,
+    # navigator hasn't run yet on attempt 0, so state["navigator_analysis"] is empty.
+    # instead use the test feedback as the retrieval query — it describes
+    # what went wrong in concrete terms (expected vs actual output diff)
+    query = "\n".join([
+    f"Test {f['test']}: expected '{f['expected']}' but got '{f['actual'][:200]}'"
+    for f in state["feedback"]
+])
+    
+    # move prints HERE — before the early exit
+    print(f"[retrieve_node] language_pair: {language_pair}")
+    print(f"[retrieve_node] query: '{query[:200]}'")
+    print(f"[retrieve_node] feedback list: {state['feedback']}")  # add this too
+
+    if not query.strip():
+        print("[retrieve_node] query is empty — returning early")  # confirm this is the exit point
+        return {"retrieved_context": []}
+    
+    experiences = retrieve_similar_experiences(
+        language_pair=language_pair,
+        navigator_analysis=query,   # feedback as proxy for navigator analysis
+        k=5,
+        mmr_k=3,
+        mmr_lambda=0.5
+    )
+    
+    return {"retrieved_context": experiences}
+
+def extract_error_snippet(navigator_analysis: str, translated_code: str) -> str:
+    try:
+        # navigator_analysis is already parsed JSON string
+        analysis = json.loads(navigator_analysis)
+        relevant = analysis.get("relevant_lines", {})
+        start = int(relevant.get("start", 1)) - 1  # convert 1-indexed to 0-indexed
+        end = int(relevant.get("end", 30))
         
+        lines = translated_code.splitlines()
+        snippet = "\n".join(lines[start:end])
+        return snippet
+    except (json.JSONDecodeError, KeyError, ValueError):
+        # fallback: return first 30 lines if JSON parsing fails
+        return "\n".join(translated_code.splitlines()[:30])
+    
+
+def store_node(state: TranslationState, config: RunnableConfig) -> dict:
+    # only store if a fix was actually needed — attempt_count=0 means
+    # first translation passed, nothing useful to store
+    if state["attempt_count"] == 0:
+        return {}
+    
+    language_pair = f"{state['inp_lang']}→{state['target_lang']}"
+        # re-extract same line range but from the final working code
+    working_fix = extract_error_snippet(
+        state["navigator_analysis"],  # contains relevant_lines range
+        state["translated_code"]      # now the FIXED version after driver succeeded
+    )
+
+
+    
+    store_experience(
+        language_pair=language_pair,
+        navigator_analysis=state["navigator_analysis"],
+        error_snippet=state["error_snippet"],    # broken snippet (from navigator run)
+        working_fix_snippet=working_fix,         # fixed snippet (same lines, working code)
+        test_feedback=str(state['last_feedback']),
+        attempt_number=state["attempt_count"]
+    )
+    
+    return {}   # store_node doesn't update any state field
+ 
 def navigator_node(state: TranslationState, config: RunnableConfig) -> dict:
     provider = config["configurable"]["provider"]
     model_id = config["configurable"]["model_id"]
@@ -615,8 +692,23 @@ def navigator_node(state: TranslationState, config: RunnableConfig) -> dict:
     input_code=state['input_code']
     translated_code=state['translated_code']
     target_lng=state['target_lang']
+        # build retrieved context string only if experiences exist
+    retrieved_context_str = ""
+    if state["retrieved_context"]:
+        retrieved_context_str = "RELEVANT PAST FIXES (use these as hints):\n"
+        for i, exp in enumerate(state["retrieved_context"], 1):
+            retrieved_context_str += f"""
+    Past Fix {i}:
+    - What went wrong: {exp['navigator_analysis']}
+    - Failing snippet:
+    {exp['error_snippet']}
+    - Working fix:
+    {exp['working_fix_snippet']}
+    - Test feedback: {exp['test_feedback']}
+    ---"""
     nav_prompt = f'''You are an expert code translation debugging assistant. Analyze failed test cases and identify the ROOT CAUSE of differences between the {inp_lng} and {target_lng} code.
 
+{retrieved_context_str}
 ANALYZE THE FOLLOWING FATAL ERRORS:
 1. **Dropped I/O**: Did the code skip reading a variable entirely?
 2. **NameError**: Did a subroutine try to accept variables that weren't defined yet?
@@ -631,8 +723,16 @@ Provide STRICT JSON with actionable fix hints:
   "error_summary": "...",
   "affected_lines": "...",
   "root_cause": "...",
-  "fix_hints": ["hint 1", "hint 2"]
+  "fix_hints": ["hint 1", "hint 2"],
+  "relevant_lines": {{"start": <integer>, "end": <integer>}}
 }}
+
+"relevant_lines" must point to the EXACT lines of the error in the translated code.
+If root_cause mentions 'main function', relevant_lines must point to where main() 
+starts and ends in the translated code — NOT to other functions.
+Count the actual line numbers in the translated code provided above before setting 
+start and end. Double-check: does the code at lines start→end actually contain 
+the error described in root_cause? If not, recount.
 
 Failed Test Case(s):
 {feedback}
@@ -650,7 +750,10 @@ Translated Code ({target_lng}):
     json_match = re.search(r'\{[\s\S]*\}', navigator_raw or "")
     navigator_analysis = json_match.group(0) if json_match else (navigator_raw or "").strip()
 
-    return {"navigator_analysis": navigator_analysis}
+    return {
+    "navigator_analysis": navigator_analysis,
+    "error_snippet": extract_error_snippet(navigator_analysis, state["translated_code"])
+}
 
 
 def driver_node(state: TranslationState,config: RunnableConfig) -> dict:
@@ -700,13 +803,16 @@ Return ONLY the fully corrected, executable {target_lng} code in a single code b
         "attempt_count": state["attempt_count"] + 1,
     }
 
+
+
 def route_after_tests(state: TranslationState) -> str:
-    if not state["translated_code"].strip(): return "end"
     if state["passed"]:
         return "end"
     if state["attempt_count"] >= state["max_attempts"]:
         return "end"
-    return "fix"
+    if state["attempt_count"] == 0:
+        return "retrieve"   # first failure — retrieve context before navigator
+    return "fix"            # subsequent failures — go straight to navigator
 
 graph = StateGraph(TranslationState)
 
@@ -715,6 +821,8 @@ graph.add_node("translate", translate_node)
 graph.add_node("run_tests", run_tests_node)
 graph.add_node("navigator", navigator_node)
 graph.add_node("driver", driver_node)
+graph.add_node("retrieve", retrieve_node)
+graph.add_node("store", store_node)
 
 graph.set_entry_point("setup")
 graph.add_edge("setup", "translate")
@@ -722,16 +830,19 @@ graph.add_edge("translate", "run_tests")
 
 graph.add_conditional_edges(
     "run_tests",
-    route_after_tests,
-    {"end": END, "fix": "navigator"}
+      route_after_tests,
+    {
+        "end": "store",      # always go to store first, store decides whether to write
+        "retrieve": "retrieve",
+        "fix": "navigator"
+    }
 )
-
+graph.add_edge("retrieve", "navigator")
 graph.add_edge("navigator", "driver")
 graph.add_edge("driver", "run_tests")   # loop back
 
 checkpointer = InMemorySaver()
 app = graph.compile(checkpointer=checkpointer)
-app
 
 # import uuid
 
