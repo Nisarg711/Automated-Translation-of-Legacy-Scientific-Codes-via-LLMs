@@ -34,10 +34,17 @@ def get_db_connection():
     register_vector(conn)  # critical — tells psycopg2 how to handle vector type
     return conn
 
-embedding_model =HuggingFaceEmbeddings(model="all-MiniLM-L6-v2")
+_embedding_model = None
+
+def _get_embedding_model():
+    """Lazy-load the embedding model — avoids ~200MB memory at startup on Render."""
+    global _embedding_model
+    if _embedding_model is None:
+        _embedding_model = HuggingFaceEmbeddings(model="all-MiniLM-L6-v2")
+    return _embedding_model
 
 def embed_text(text: str) -> np.ndarray:
-    embedding = embedding_model.embed_query(text)
+    embedding = _get_embedding_model().embed_query(text)
     return embedding
 
 
