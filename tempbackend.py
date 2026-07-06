@@ -26,6 +26,7 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 import json
 import uuid
+from rank_bm25 import BM25Okapi
 load_dotenv()
 
 def get_db_connection():
@@ -70,7 +71,7 @@ def get_working_filepath(target_lang: str) -> str:  #This is used for temporary 
     return path
 
 def get_file_extension(language):
-    extensions = {"python": ".py", "c": ".c", "cpp": ".cpp", "java": ".java", "go": ".go", "rust": ".rs","fortran": ".f"}
+    extensions = {"python": ".py", "c": ".c", "cpp": ".cpp", "c++": ".cpp", "java": ".java", "go": ".go", "rust": ".rs","fortran": ".f"}
     return extensions.get(language.lower(), ".txt")
 
 def extract_code(llm_output: str) -> str:
@@ -278,13 +279,13 @@ def run_program(language, filepath, input_data, timeout=5):
             res = subprocess.run([exe], input=input_data, text=True, capture_output=True, timeout=timeout)
             return res.stdout.strip(), res.stderr if res.returncode != 0 else None
             
-        # MISSING FORTRAN BLOCK RESTORED HERE
         elif lang in ["fortran", "f77", "f90"]:
             exe = "./a.out"
             comp = subprocess.run(["gfortran", filepath, "-o", exe], capture_output=True, text=True)
             if comp.returncode != 0: return "", f"Compile error: {comp.stderr}"
             res = subprocess.run([exe], input=input_data, text=True, capture_output=True, timeout=timeout)
             return res.stdout.strip(), res.stderr if res.returncode != 0 else None
+
 
         elif lang == "java":
             file_dir = os.path.dirname(filepath) or "."
@@ -389,7 +390,24 @@ a = type(input().strip())
 b = type(input().strip())
 
 "16) **DIVISION BY ZERO (IEEE 754)**: Fortran natively handles division by zero by evaluating to `Infinity` and propagating `NaN`s, whereas Python crashes with `ZeroDivisionError`. If a formula may divide by zero, you MUST handle it by returning `float('inf')` (or `-inf` based on the numerator) to perfectly match Fortran's behavior. NEVER add an epsilon (e.g., `+ 1e-6`) or return 0, as this causes numerical explosions and OverflowErrors in physics loops.\n",
+17) **C TARGET - printf FORMAT STRINGS (CRITICAL)**:
+   - NEVER split a printf format string across multiple lines.
+   - The \n escape sequence inside printf MUST be written as \\n within 
+     the format string on a SINGLE line.
+   - CORRECT:   printf("%20.10f%20.10f%20.10f\n", t, theta, omega);
+   - INCORRECT: printf("%20.10f%20.10f%20.10f\\n
+                       ", t, theta, omega);
+   - Every printf call must open and close its format string on the same line.
+   - This applies to ALL printf/fprintf calls without exception.
 
+   18) **FORTRAN TO C - OUTPUT PRESERVATION**:
+   - Fortran write(*,'(3f20.10)') a, b, c translates to 
+     printf("%20.10f%20.10f%20.10f\n", a, b, c); — keep the printf, 
+     do NOT remove it.
+   - Only remove printf calls that were added as interactive prompts 
+     (e.g. "Enter value ->"). Never remove data output statements.
+   - Fortran format specifiers map directly: f20.10 → %20.10f, 
+     e12.5 → %12.5e, i5 → %5d.
 Code to Translate: {input_code} '''
 
     raw_output = generate_code(prompt, provider, model_id)
@@ -421,7 +439,9 @@ def run_tests_node(state: TranslationState, config: RunnableConfig) -> dict:
     legacy_blocks = []
     translated_blocks = []
     for i, input_data in enumerate(tests, 1):
-        legacy_out, _ = run_program(state["inp_lang"], state["input_path"], input_data)
+        legacy_out, legacy_err = run_program(state["inp_lang"], state["input_path"], input_data)
+        if legacy_err:
+            print(f"[run_tests_node] Legacy execution error on test {i}: {legacy_err}")
         translated_out, err = run_program(state["target_lang"], state["working_filepath"], input_data)
         # ... rest unchanged
 
@@ -617,16 +637,8 @@ def retrieve_node(state:TranslationState,config:RunnableConfig)->dict:
     # navigator hasn't run yet on attempt 0, so state["navigator_analysis"] is empty.
     # instead use the test feedback as the retrieval query — it describes
     # what went wrong in concrete terms (expected vs actual output diff)
-    query = "\n".join([
-    f"Test {f['test']}: expected '{f['expected']}' but got '{f['actual'][:200]}'"
-    for f in state["feedback"]
-])
-    
-    # move prints HERE — before the early exit
-    print(f"[retrieve_node] language_pair: {language_pair}")
-    print(f"[retrieve_node] query: '{query[:200]}'")
-    print(f"[retrieve_node] feedback list: {state['feedback']}")  # add this too
-
+    first_fail = state["feedback"][0]
+    query = f"expected '{first_fail['expected'][:100]}' but got '{first_fail['actual'][:150]}'"
     if not query.strip():
         print("[retrieve_node] query is empty — returning early")  # confirm this is the exit point
         return {"retrieved_context": []}
@@ -699,12 +711,12 @@ def navigator_node(state: TranslationState, config: RunnableConfig) -> dict:
         for i, exp in enumerate(state["retrieved_context"], 1):
             retrieved_context_str += f"""
     Past Fix {i}:
-    - What went wrong: {exp['navigator_analysis']}
+    -  What went wrong: {exp['navigator_analysis'][:300]}
     - Failing snippet:
-    {exp['error_snippet']}
+    {exp['error_snippet'][:300]}
     - Working fix:
-    {exp['working_fix_snippet']}
-    - Test feedback: {exp['test_feedback']}
+    {exp['working_fix_snippet'][:300]}
+     - Test feedback: {exp['test_feedback']}
     ---"""
     nav_prompt = f'''You are an expert code translation debugging assistant. Analyze failed test cases and identify the ROOT CAUSE of differences between the {inp_lng} and {target_lng} code.
 
