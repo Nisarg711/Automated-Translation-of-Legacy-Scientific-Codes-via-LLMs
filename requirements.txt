@@ -13,4 +13,6 @@ psycopg2-binary
 pgvector
 sentence-transformers
 langchain_huggingface
+bcrypt
+streamlit-google-auth
 rank-bm25

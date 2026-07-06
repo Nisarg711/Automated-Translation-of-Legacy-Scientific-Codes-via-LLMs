@@ -30,3 +30,14 @@ WITH (lists = 100);
 -- lists = 100 is the number of clusters IVFFlat builds internally. 
 -- Rule of thumb: sqrt(number of rows) — so 100 is appropriate up to about 10,000 
 -- stored experiences, which you won't hit for a while.
+
+-- ------------------------------------------------------------------------------------
+-- Users table for authentication
+-- ------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
