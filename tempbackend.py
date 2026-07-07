@@ -6,7 +6,8 @@ from langgraph.graph.message import add_messages
 from langgraph.graph import START, END,StateGraph
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
-from langchain_huggingface import HuggingFaceEmbeddings
+# langchain_huggingface and sentence_transformers are lazy-imported in _get_embedding_model()
+# to avoid loading PyTorch (~200MB) at startup — critical for Render's 512MB free tier
 from dotenv import load_dotenv  
 import os
 import re
@@ -22,7 +23,7 @@ from groq import Groq
 from langgraph.checkpoint.memory import InMemorySaver
 import psycopg2
 from pgvector.psycopg2 import register_vector
-from sentence_transformers import SentenceTransformer
+
 import numpy as np
 import json
 import uuid
@@ -40,7 +41,8 @@ def _get_embedding_model():
     """Lazy-load the embedding model — avoids ~200MB memory at startup on Render."""
     global _embedding_model
     if _embedding_model is None:
-        _embedding_model = HuggingFaceEmbeddings(model="all-MiniLM-L6-v2")
+        from langchain_huggingface import HuggingFaceEmbeddings
+        _embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     return _embedding_model
 
 def embed_text(text: str) -> np.ndarray:
