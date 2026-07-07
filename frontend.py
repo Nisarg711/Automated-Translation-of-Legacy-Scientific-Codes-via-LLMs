@@ -271,14 +271,15 @@ def translate_code(code, source_lang, target_lang, thread_id, tests=[]) -> dict:
             "configurable": {
                 "thread_id": thread_id,
                 "provider": "groq",
-                # "model_id": "llama-3.3-70b-versatile",
-                "model_id": "openai/gpt-oss-120b",
+                "model_id": "llama-3.3-70b-versatile",
+                # "model_id": "openai/gpt-oss-120b",
                 # "model_id":"qwen/qwen3.6-27b",
                 # "model_id": "llama-3.1-8b-instant",
                 "tests": tests,   # placeholder until UI supports test input
             }
         }
     )
+    st.session_state['errors_fixes'] = result.get("retrieved_context", [])
     print(result)
     # TODO: also pull result["retrieved_pairs"] here once RAG is in
     return result
@@ -610,17 +611,27 @@ def show_translator_ui():
     # ------------------------------------------------------------------------------------
     # Errors & Fixes panel — placeholder for RAG-retrieved context
     # ------------------------------------------------------------------------------------
-    with st.expander("🧠 Retrieved errors & fixes (RAG)", expanded=False):
-        # TODO: once translate_code() actually does retrieval, populate
-        # st.session_state['errors_fixes'] with (error, fix) pairs and render them here,
-        # e.g. one st.warning(error) + st.success(fix) per retrieved pair, plus maybe
-        # a similarity score so you can see what RAG matched on.
-        if not st.session_state['errors_fixes']:
-            st.caption("Nothing retrieved yet — this fills in once RAG is wired into translate_code().")
-        else:
-            for err, fix in st.session_state['errors_fixes']:
-                st.warning(err)
-                st.success(fix)
+        with st.expander("🧠 Retrieved errors & fixes (RAG)", expanded=False):
+            if not st.session_state['errors_fixes']:
+                st.caption("Nothing retrieved — either no similar past errors exist yet, or this translation passed on first attempt.")
+            else:
+                st.caption(f"{len(st.session_state['errors_fixes'])} past experience(s) retrieved and used to guide this translation")
+                for i, exp in enumerate(st.session_state['errors_fixes'], 1):
+                    st.markdown(f"**Past Fix {i}**")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("<div class='output-label'>What went wrong</div>", unsafe_allow_html=True)
+                        try:
+                            import json
+                            nav = json.loads(exp['navigator_analysis'])
+                            st.caption(nav.get('error_summary', exp['navigator_analysis'][:200]))
+                        except:
+                            st.caption(exp['navigator_analysis'][:200])
+                    with col2:
+                        st.markdown("<div class='output-label'>Working fix applied</div>", unsafe_allow_html=True)
+                        st.code(exp['working_fix_snippet'], language="python")
+                    if i < len(st.session_state['errors_fixes']):
+                        st.divider()
 
 
 # ====================================================================================

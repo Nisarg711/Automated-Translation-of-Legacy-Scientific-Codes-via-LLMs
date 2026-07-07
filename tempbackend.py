@@ -50,6 +50,92 @@ def embed_text(text: str) -> np.ndarray:
     return embedding
 
 
+def get_bm25_index(language_pair: str):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT parent_id, navigator_analysis 
+                FROM child_vectors
+                WHERE language_pair = %s
+            """, (language_pair,))
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    if not rows or len(rows) < 2:  # BM25 needs at least 2 documents to be meaningful
+        return None, rows
+
+    corpus = [row[1].lower().split() for row in rows]
+    try:
+        bm25 = BM25Okapi(corpus, epsilon=0.25)
+        #Here, this function actually computes IDF for each unique term and also the TFs for each doc
+        #as well as stores length and avg length of document.
+    except ZeroDivisionError:
+        return None, rows   # fall back gracefully — dense retrieval only
+
+    return bm25, rows
+
+
+def bm25_retrieve(query: str, language_pair: str, k: int = 5) -> list:
+    """
+    Retrieves top-k results using BM25 scoring.
+    Returns list of (parent_id, navigator_analysis, bm25_score) tuples
+    sorted by score descending.
+    """
+    bm25, rows = get_bm25_index(language_pair)
+    
+    if not rows or bm25 is None:
+        return []
+    
+    # tokenize query the same way as corpus — lowercase + whitespace split
+    query_tokens = query.lower().split()
+    
+    # get BM25 scores for all documents
+    scores = bm25.get_scores(query_tokens)
+    #It returns a numpy array of length N (one score per document in your corpus), 
+    # where each score is the BM25 relevance score of that document against your query. Higher score = more relevant.
+    # pair each score with its row and sort descending
+    scored = sorted(
+        zip(scores, rows),
+        key=lambda x: x[0],
+        reverse=True
+    )
+    #You zip each score with its corresponding row (parent_id, navigator_analysis), sort by score descending, 
+    # and return the top-k with score > 0 — filtering out documents with zero keyword overlap.
+    # return top-k as (parent_id, navigator_analysis, bm25_score)
+    return [
+        (row[0], row[1], score)
+        for score, row in scored[:k]
+        if score > 0  # filter out zero-score documents — no keyword overlap at all
+    ]
+def reciprocal_rank_fusion(
+    dense_results: list,      # list of (parent_id, nav_analysis, embedding, similarity)
+    bm25_results: list,       # list of (parent_id, nav_analysis, bm25_score)
+    k: int = 60               # RRF damping constant — 60 is standard default
+) -> list:
+    """
+    Fuses dense and BM25 ranked lists using Reciprocal Rank Fusion.
+    Returns list of (parent_id, rrf_score) sorted by score descending.
+    k=60 is the standard RRF constant from the original 2009 paper —
+    dampens the impact of very high ranks without ignoring lower ones.
+    """
+    rrf_scores = {}  # parent_id -> cumulative RRF score
+
+    # score from dense retrieval list
+    for rank, result in enumerate(dense_results, start=1):
+        parent_id = str(result[0])
+        rrf_scores[parent_id] = rrf_scores.get(parent_id, 0) + 1 / (k + rank)
+
+    # score from BM25 retrieval list
+    for rank, result in enumerate(bm25_results, start=1):
+        parent_id = str(result[0])
+        rrf_scores[parent_id] = rrf_scores.get(parent_id, 0) + 1 / (k + rank)
+
+    # sort by combined RRF score descending
+    sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+    return sorted_ids  # list of (parent_id, rrf_score)
+
 class TranslationState(TypedDict):
     input_code: str
     inp_lang: str
@@ -277,7 +363,7 @@ def run_program(language, filepath, input_data, timeout=5):
     
     try:
         if lang == "python":
-            res = subprocess.run(["python", filepath], input=input_data, text=True, capture_output=True, timeout=timeout)
+            res = subprocess.run(["python", filepath], input=input_data, text=True, capture_output=True, timeout=timeout,  cwd=os.path.dirname(filepath))  # run in same dir as the compiled binary)
             return res.stdout.strip(), res.stderr if res.returncode != 0 else None
             
         elif lang in ["c", "cpp", "c++"]:
@@ -417,6 +503,11 @@ b = type(input().strip())
      (e.g. "Enter value ->"). Never remove data output statements.
    - Fortran format specifiers map directly: f20.10 → %20.10f, 
      e12.5 → %12.5e, i5 → %5d.
+
+     CRITICAL: You must output the COMPLETE translated code with no truncation.
+Every function must be fully closed with its closing brace.
+Never end your response mid-function. If the code is long, prioritize
+completeness over comments.
 Code to Translate: {input_code} '''
 
     raw_output = generate_code(prompt, provider, model_id)
@@ -524,58 +615,10 @@ def store_experience(
     finally:
         conn.close()
 
-
-def mmr_rerank(
-    candidates: list,      # list of (parent_id, nav_analysis, embedding, similarity)
-    query_embedding: np.ndarray,
-    mmr_k: int,
-    mmr_lambda: float
-) -> list:
-    
-    if len(candidates) <= mmr_k:
-        return candidates  # not enough candidates to rerank
-    
-    # extract embeddings as numpy array for vectorized similarity computation
-    candidate_embeddings = np.array([c[2] for c in candidates])
-    
-    selected_indices = []
-    remaining_indices = list(range(len(candidates)))
-    
-    for _ in range(mmr_k):
-        best_score = -np.inf
-        best_idx = None
-        
-        for idx in remaining_indices:
-            # similarity to query (already computed during retrieval)
-            query_sim = candidates[idx][3]  # similarity score from SQL
-            
-            # max similarity to already selected candidates
-            if selected_indices:
-                selected_embeddings = candidate_embeddings[selected_indices]
-                redundancy = np.max(
-                    candidate_embeddings[idx] @ selected_embeddings.T
-                )  # dot product = cosine similarity since embeddings are normalized
-            else:
-                redundancy = 0  # no selected yet, no redundancy penalty
-            
-            mmr_score = mmr_lambda * query_sim - (1 - mmr_lambda) * redundancy
-            
-            if mmr_score > best_score:
-                best_score = mmr_score
-                best_idx = idx
-        
-        selected_indices.append(best_idx)
-        remaining_indices.remove(best_idx)
-    
-    return [candidates[i] for i in selected_indices]
-
-
 def retrieve_similar_experiences(
     language_pair: str,
     navigator_analysis: str,
-    k: int = 5,           # number of candidates before MMR reranking
-    mmr_k: int = 3,       # final number after MMR reranking
-    mmr_lambda: float = 0.5  # balance between similarity and diversity
+    k: int = 5,
 ) -> list[dict]:
     #MMR: maximal Marginal relevance
     #<=> is PGVector's cosine distance operator — lower value means more similar. 
@@ -589,6 +632,7 @@ def retrieve_similar_experiences(
         with conn.cursor() as cur:
             # Step 1: metadata pre-filter + vector similarity search
             # Only searches within the same language pair — hard constraint
+            #-------- THis is dense retrieval ------
             cur.execute("""
     SELECT 
         c.parent_id,
@@ -601,24 +645,27 @@ def retrieve_similar_experiences(
     LIMIT %s
 """, (query_embedding.tolist(), language_pair, query_embedding.tolist(), k))
             
-            candidates = cur.fetchall()
+            dense_results = cur.fetchall()
             
-            if not candidates:
+            if not dense_results:
                 return []
             
-            # Step 2: MMR reranking over candidates
-            # TODO: apply MMR here — we'll implement this as a separate function
-            selected = mmr_rerank(candidates, query_embedding, mmr_k, mmr_lambda)
+            # --- BM25 retrieval ---
+            bm25_results = bm25_retrieve(navigator_analysis, language_pair, k=k)
+
+                        # --- RRF fusion ---
+            fused = reciprocal_rank_fusion(dense_results, bm25_results)
+
+            # take top k after fusion
+            top_ids = [parent_id for parent_id, _ in fused[:2]]
             
-            # Step 3: fetch full parent documents for selected candidates
-            parent_ids = [c[0] for c in selected]
             cur.execute("""
-                SELECT 
-                    language_pair, navigator_analysis, error_snippet,
-                    working_fix_snippet, test_feedback, attempt_number
-                FROM parent_documents
-                WHERE id = ANY(%s::uuid[])
-            """, (parent_ids,))
+            SELECT 
+                language_pair, navigator_analysis, error_snippet,
+                working_fix_snippet, test_feedback, attempt_number
+            FROM parent_documents
+            WHERE id = ANY(%s::uuid[])
+        """, (top_ids,))
             
             parents = cur.fetchall()
             
@@ -655,9 +702,7 @@ def retrieve_node(state:TranslationState,config:RunnableConfig)->dict:
     experiences = retrieve_similar_experiences(
         language_pair=language_pair,
         navigator_analysis=query,   # feedback as proxy for navigator analysis
-        k=5,
-        mmr_k=3,
-        mmr_lambda=0.5
+        k=5 
     )
     
     return {"retrieved_context": experiences}
@@ -722,10 +767,10 @@ def navigator_node(state: TranslationState, config: RunnableConfig) -> dict:
     Past Fix {i}:
     -  What went wrong: {exp['navigator_analysis'][:300]}
     - Failing snippet:
-    {exp['error_snippet'][:300]}
+    {exp['error_snippet'][:200]}
     - Working fix:
-    {exp['working_fix_snippet'][:300]}
-     - Test feedback: {exp['test_feedback']}
+    {exp['working_fix_snippet'][:200]}
+]
     ---"""
     nav_prompt = f'''You are an expert code translation debugging assistant. Analyze failed test cases and identify the ROOT CAUSE of differences between the {inp_lng} and {target_lng} code.
 
