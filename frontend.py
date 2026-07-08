@@ -226,6 +226,7 @@ def new_translation_session():
     st.session_state['errors_fixes'] = []  # placeholder: will hold RAG-retrieved (error, fix) pairs
     st.session_state['legacy_output'] = ""
     st.session_state['translated_output'] = ""
+    st.session_state['pending_test_input'] = ""
 
 
 def add_thread(thread_id, title="New Translation"):
@@ -271,8 +272,8 @@ def translate_code(code, source_lang, target_lang, thread_id, tests=[]) -> dict:
             "configurable": {
                 "thread_id": thread_id,
                 "provider": "groq",
-                "model_id": "llama-3.3-70b-versatile",
-                # "model_id": "openai/gpt-oss-120b",
+                # "model_id": "llama-3.3-70b-versatile",
+                "model_id": "openai/gpt-oss-120b",
                 # "model_id":"qwen/qwen3.6-27b",
                 # "model_id": "llama-3.1-8b-instant",
                 "tests": tests,   # placeholder until UI supports test input
@@ -311,6 +312,8 @@ if 'errors_fixes' not in st.session_state:
 
 if 'tests' not in st.session_state:
     st.session_state['tests'] = []
+if 'pending_test_input' not in st.session_state:
+    st.session_state['pending_test_input'] = ""
 
 if 'attempt_count' not in st.session_state:
     st.session_state['attempt_count'] = 0
@@ -465,6 +468,8 @@ def show_translator_ui():
     # ------------------------------------------------------------------------------------
     lang_slot = st.container()
     tab_slot = st.container()
+    uploaded_code = None
+    uploaded_file = None
 
     with tab_slot:
         # Input: either Write code or upload file
@@ -483,17 +488,7 @@ def show_translator_ui():
             uploaded_file = st.file_uploader(
                 "Drop a code file",
                 type=list(EXT_TO_LANG.keys()),
-            )
-            uploaded_test_file = st.file_uploader(
-                "Drop a test file",
-                type=".txt"
-            )
-            uploaded_test = None
-            if uploaded_test_file is not None:
-                uploaded_test = uploaded_test_file.read().decode("utf-8")
-                st.session_state['tests'] = parse_tests_from_string(uploaded_test)
-                st.caption(f"✅ {len(st.session_state['tests'])} test case(s) loaded")
-            uploaded_code = None
+            ) 
             if uploaded_file is not None:
                 uploaded_code = uploaded_file.read().decode("utf-8")
                 ext = uploaded_file.name.split(".")[-1].lower()
@@ -520,6 +515,57 @@ def show_translator_ui():
 
     #uploaded file takes priority if both inputs are filled
     active_code = uploaded_code if (uploaded_file is not None and uploaded_code) else pasted_code
+
+
+    test_slot = st.container()
+    with test_slot:
+        st.markdown("<div style='margin:12px 0 6px 0;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;font-family:Inter,sans-serif'>Test Cases</div>", unsafe_allow_html=True)
+
+        tc_col1, tc_col2 = st.columns([1, 1])
+        with tc_col1:
+            uploaded_test_file = st.file_uploader(
+                "Upload a test file",
+                type="txt",
+                key="test_file_uploader"
+            )
+            if uploaded_test_file is not None:
+                content = uploaded_test_file.read().decode("utf-8")
+                st.session_state['tests'] = parse_tests_from_string(content)
+                st.caption(f"✅ {len(st.session_state['tests'])} test case(s) loaded from file")
+
+        with tc_col2:
+            st.caption("Enter the number of test cases on the first line, then paste each test case separated by a blank line.")
+            manual_input = st.text_area(
+                "Test input (stdin)",
+                height=180,
+                placeholder="Example:\n2\n1 2\n3 4\n\n5\n6 7\n8 9\n\nEach test case can span multiple lines. Separate test cases with a blank line.",
+                key="manual_test_input_text",
+                label_visibility="collapsed"
+            )
+            load_col, clear_col = st.columns([1, 1])
+            with load_col:
+                if st.button("📥 Load test cases", use_container_width=True):
+                    if manual_input.strip():
+                        parsed = parse_tests_from_string(manual_input)
+                        st.session_state['tests'] = parsed
+                        st.rerun()
+            with clear_col:
+                if st.button("🗑 Clear all", use_container_width=True):
+                    st.session_state['tests'] = []
+                    st.rerun()
+            # --- Show added test cases ---
+        if st.session_state['tests']:
+            st.markdown(f"<div style='font-size:11px;color:#94a3b8;margin-top:8px'>{len(st.session_state['tests'])} test case(s) ready</div>", unsafe_allow_html=True)
+            for i, t in enumerate(st.session_state['tests'], 1):
+                t_col1, t_col2 = st.columns([10, 1])
+                with t_col1:
+                    st.caption(f"Test {i}:")
+                    st.code(t.rstrip(), language="text")
+                with t_col2:
+                    if st.button("✕", key=f"remove_test_{i}"):
+                        st.session_state['tests'].pop(i - 1)
+                        st.rerun()
+
 
     # ------------------------------------------------------------------------------------
     # Translate action
@@ -599,7 +645,7 @@ def show_translator_ui():
             if st.session_state['legacy_output']:
                 st.code(st.session_state['legacy_output'])
             else:
-                st.info("Upload a test file to see execution output")
+                st.info("Add test cases above to see execution output")
 
         with trans_out_col:
             st.markdown("<div class='output-label'>Execution · Translated</div>", unsafe_allow_html=True)

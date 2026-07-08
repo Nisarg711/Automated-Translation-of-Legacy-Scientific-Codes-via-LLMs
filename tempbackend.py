@@ -346,13 +346,33 @@ def parse_tests(test_file):
     return tests
 
 def parse_tests_from_string(content: str) -> list:
-    lines = content.splitlines(keepends=True) 
-    if not lines: return []
-    t = int(lines[0].strip())
+    lines = content.splitlines()
+    if not lines:
+        return []
+
+    test_count = int(lines[0].strip())
+    body_lines = lines[1:]
+    if not body_lines:
+        return []
+
+    # Backward compatibility: old files use one line per test case.
+    if all(line.strip() for line in body_lines) and len(body_lines) >= test_count:
+        return [body_lines[i].strip().replace('\\n', '\n') + '\n' for i in range(test_count)]
+
     tests = []
-    for i in range(1, t + 1):
-        tests.append(lines[i].strip().replace('\\n', '\n') + '\n')
-    return tests
+    current_case = []
+    for line in body_lines:
+        if line.strip() == "":  #This represents end of one test case
+            if current_case: 
+                tests.append('\n'.join(current_case).replace('\\n', '\n').rstrip() + '\n')
+                current_case = []
+            continue
+        current_case.append(line)
+
+    if current_case:
+        tests.append('\n'.join(current_case).replace('\\n', '\n').rstrip() + '\n')
+
+    return tests[:test_count] #It means if 4 test cases, then 4 elements of lists tests 
 
 
 
