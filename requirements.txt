@@ -15,3 +15,5 @@ sentence-transformers
 langchain_huggingface
 bcrypt
 rank-bm25
+PyJWT
+streamlit-cookies-manager

@@ -349,32 +349,31 @@ def parse_tests_from_string(content: str) -> list:
     lines = content.splitlines()
     if not lines:
         return []
-
     test_count = int(lines[0].strip())
     body_lines = lines[1:]
     if not body_lines:
         return []
 
-    # Backward compatibility: old files use one line per test case.
-    if all(line.strip() for line in body_lines) and len(body_lines) >= test_count:
-        return [body_lines[i].strip().replace('\\n', '\n') + '\n' for i in range(test_count)]
+    # old format: one line per test case with \n literals
+    # detect by checking if any line contains literal \n
+    if any('\\n' in line for line in body_lines):
+        return [body_lines[i].strip().replace('\\n', '\n') + '\n'
+                for i in range(min(test_count, len(body_lines)))]
 
+    # new format: test cases separated by blank lines
     tests = []
     current_case = []
     for line in body_lines:
-        if line.strip() == "":  #This represents end of one test case
-            if current_case: 
-                tests.append('\n'.join(current_case).replace('\\n', '\n').rstrip() + '\n')
+        if line.strip() == "":
+            if current_case:
+                tests.append('\n'.join(current_case).rstrip() + '\n')
                 current_case = []
-            continue
-        current_case.append(line)
-
+        else:
+            current_case.append(line)
     if current_case:
-        tests.append('\n'.join(current_case).replace('\\n', '\n').rstrip() + '\n')
+        tests.append('\n'.join(current_case).rstrip() + '\n')
 
-    return tests[:test_count] #It means if 4 test cases, then 4 elements of lists tests 
-
-
+    return tests[:test_count]
 
 def run_program(language, filepath, input_data, timeout=5):
     """A unified runner that returns (output, error_message)."""
@@ -387,7 +386,7 @@ def run_program(language, filepath, input_data, timeout=5):
             return res.stdout.strip(), res.stderr if res.returncode != 0 else None
             
         elif lang in ["c", "cpp", "c++"]:
-            exe = "./a.out"
+            exe = filepath + ".out"
             compiler = "gcc" if lang == "c" else "g++"
             comp = subprocess.run([compiler, filepath, "-o", exe], capture_output=True, text=True)
             if comp.returncode != 0: return "", f"Compile error: {comp.stderr}"
@@ -790,7 +789,7 @@ def navigator_node(state: TranslationState, config: RunnableConfig) -> dict:
     {exp['error_snippet'][:200]}
     - Working fix:
     {exp['working_fix_snippet'][:200]}
-]
+
     ---"""
     nav_prompt = f'''You are an expert code translation debugging assistant. Analyze failed test cases and identify the ROOT CAUSE of differences between the {inp_lng} and {target_lng} code.
 
@@ -913,6 +912,7 @@ graph.add_node("store", store_node)
 graph.set_entry_point("setup")
 graph.add_edge("setup", "translate")
 graph.add_edge("translate", "run_tests")
+graph.add_edge("store", END)
 
 graph.add_conditional_edges(
     "run_tests",

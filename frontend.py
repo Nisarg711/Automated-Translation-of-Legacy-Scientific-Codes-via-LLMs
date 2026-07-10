@@ -1,10 +1,19 @@
 import streamlit as st
+import os
 import uuid
 from tempbackend import app
 from tempbackend import parse_tests_from_string
-from auth import register_user, authenticate_user
+from auth import register_user, authenticate_user_with_token, verify_access_token
+from streamlit_cookies_manager import EncryptedCookieManager
 
 st.set_page_config(page_title="Automated Legacy Code Translator", layout="wide")
+
+cookies = EncryptedCookieManager(
+    password=os.environ["JWT_SECRET"],
+    prefix="bmp_auth",
+)
+
+cookies_ready = cookies.ready()
 
 # ------------------------------------------------------------------------------------
 # Custom CSS — typography, accent color, structural refinements, and auth page styles.
@@ -337,6 +346,40 @@ if 'role' not in st.session_state:
 if 'username' not in st.session_state:
     st.session_state['username'] = None
 
+
+def sync_auth_from_cookie():
+    token = cookies.get("auth_token")
+    if not token:
+        if st.session_state.get('role') == "guest" and st.session_state.get('authenticated'):
+            return
+        st.session_state['authenticated'] = False
+        st.session_state['role'] = None
+        st.session_state['username'] = None
+        return
+
+    token_ok, token_data = verify_access_token(token)
+    if token_ok:
+        st.session_state['authenticated'] = True
+        st.session_state['role'] = token_data.get('role', 'user')
+        st.session_state['username'] = token_data.get('username')
+    else:
+        cookies.pop("auth_token", None)
+        cookies.save()
+        st.session_state['authenticated'] = False
+        st.session_state['role'] = None
+        st.session_state['username'] = None
+
+
+def reset_app_state():
+    preserved_prefixes = ("EncryptedCookieManager",)
+    preserved_keys = {"auth_token"}
+    for key in list(st.session_state.keys()):
+        if key in preserved_keys or key.startswith(preserved_prefixes):
+            continue
+        del st.session_state[key]
+if cookies_ready:
+    sync_auth_from_cookie()
+
 add_thread(st.session_state['thread_id'], st.session_state['title'])
 
 
@@ -372,8 +415,10 @@ def show_auth_page():
                 login_submit = st.form_submit_button("Login", type="primary", use_container_width=True)
 
             if login_submit:
-                success, msg = authenticate_user(login_user, login_pass)
+                success, msg, token = authenticate_user_with_token(login_user, login_pass)
                 if success:
+                    cookies["auth_token"] = token
+                    cookies.save()
                     st.session_state['authenticated'] = True
                     st.session_state['role'] = "user"
                     st.session_state['username'] = login_user.strip()
@@ -406,6 +451,8 @@ def show_auth_page():
         # ---- Guest button ----
         st.markdown("<div class='guest-section'><div class='label'>or</div></div>", unsafe_allow_html=True)
         if st.button("Continue as Guest", use_container_width=True, key="guest_btn"):
+            cookies.pop("auth_token", None)
+            cookies.save()
             st.session_state['authenticated'] = True
             st.session_state['role'] = "guest"
             st.session_state['username'] = None
@@ -433,9 +480,9 @@ def show_translator_ui():
 
         # Logout button
         if st.button("Logout", use_container_width=True, key="logout_btn"):
-            # Clear auth state but preserve nothing — full reset
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
+            cookies.pop("auth_token", None)
+            cookies.save()
+            reset_app_state()
             st.rerun()
 
         st.markdown("<div style='height:2px;background:linear-gradient(90deg,#f1c40f22,transparent);border-radius:2px;margin:8px 0 16px 0'></div>", unsafe_allow_html=True)
