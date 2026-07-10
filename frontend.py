@@ -266,8 +266,7 @@ def load_translation(thread_id):
 
 
 def translate_code(code, source_lang, target_lang, thread_id, tests=[]) -> dict:
-    result = app.invoke(
-        {
+    inputs= {
             "input_code": code,
             "inp_lang": source_lang.lower(),
             "target_lang": target_lang.lower(),
@@ -276,8 +275,8 @@ def translate_code(code, source_lang, target_lang, thread_id, tests=[]) -> dict:
             "retrieved_context": [],    # NEW
             "error_snippet": "",        # NEW
             "last_feedback": [],        # NEW
-        },
-        config={
+        }
+    config={
             "configurable": {
                 "thread_id": thread_id,
                 "provider": "groq",
@@ -288,12 +287,34 @@ def translate_code(code, source_lang, target_lang, thread_id, tests=[]) -> dict:
                 "tests": tests,   # placeholder until UI supports test input
             }
         }
-    )
+            # node name → human readable status message
+    NODE_MESSAGES = {
+        "setup":     "⚙️  Setting up environment...",
+        "translate": "🔄  Translating code...",
+        "run_tests": "🧪  Running test cases...",
+        "retrieve":  "🧠  Retrieving similar past fixes...",
+        "navigator": "🔍  Diagnosing errors...",
+        "driver":    "🔧  Applying fix...",
+        "store":     "💾  Storing experience...",
+    }
+    with st.status("Translating...", expanded=True) as status:
+        for updates in app.stream(inputs,config,stream_mode='updates'):
+            node_name=list(updates.keys())[0]
+            message = NODE_MESSAGES.get(node_name, f"Running {node_name}...")
+            st.write(message)
+        if node_name=="run_tests":
+            node_state = updates[node_name]
+            if not node_state.get("passed", True) and node_state.get("feedback"):
+                attempt=node_state.get("attempt_count",0)
+                failed = len(node_state.get("feedback", []))
+                st.write(f"   ↳ {failed} test(s) failed — attempt {attempt + 1}")
+
+    final_state=app.get_state({"configurable":{"thread_id":thread_id}})
+    status.update(label="✅ Translation complete!", state="complete", expanded=False)
+    result = final_state.values
     st.session_state['errors_fixes'] = result.get("retrieved_context", [])
     print(result)
-    # TODO: also pull result["retrieved_pairs"] here once RAG is in
     return result
-
 
 # ------------------------------------------------------------------------------------
 # Session state init
@@ -623,17 +644,14 @@ def show_translator_ui():
     if translate_clicked:
         st.session_state['source_code'] = active_code
 
-        with st.spinner("Translating..."):
-            # TODO: swap for st.write_stream(...) once the LangGraph app streams tokens,
-            # the same way your chatbot does with stream_mode="messages"
-            result = translate_code(
+        result = translate_code(
                 active_code, source_lang, target_lang, st.session_state['thread_id'], st.session_state['tests']
             )
-            st.session_state['translated_code'] = result["translated_code"]
-            st.session_state['attempt_count'] = result["attempt_count"]
-            st.session_state['passed'] = result["passed"]
-            st.session_state['legacy_output'] = result["legacy_output"]
-            st.session_state['translated_output'] = result["translated_output"]
+        st.session_state['translated_code'] = result["translated_code"]
+        st.session_state['attempt_count'] = result["attempt_count"]
+        st.session_state['passed'] = result["passed"]
+        st.session_state['legacy_output'] = result["legacy_output"]
+        st.session_state['translated_output'] = result["translated_output"]
 
         title = f"{source_lang} → {target_lang}"
         st.session_state['title'] = title
