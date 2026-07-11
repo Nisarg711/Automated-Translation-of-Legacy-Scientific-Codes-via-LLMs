@@ -387,10 +387,24 @@ def run_program(language, filepath, input_data, timeout=5):
             
         elif lang in ["c", "cpp", "c++"]:
             exe = filepath + ".out"
-            compiler = "gcc" if lang == "c" else "g++"
-            comp = subprocess.run([compiler, filepath, "-o", exe], capture_output=True, text=True)
-            if comp.returncode != 0: return "", f"Compile error: {comp.stderr}"
-            res = subprocess.run([exe], input=input_data, text=True, capture_output=True, timeout=timeout)
+            if lang == "c":
+                compiler = "gcc"
+                std_flag = "-std=c11"
+            else:
+                compiler = "g++"
+                std_flag = "-std=c++17"
+
+            comp = subprocess.run(
+                [compiler, std_flag, filepath, "-o", exe],
+                capture_output=True, text=True
+            )
+            if comp.returncode != 0:
+                return "", f"Compile error: {comp.stderr}"
+            res = subprocess.run(
+                [exe], input=input_data, text=True,
+                capture_output=True, timeout=timeout,
+                cwd=os.path.dirname(filepath)
+            )
             return res.stdout.strip(), res.stderr if res.returncode != 0 else None
             
         elif lang in ["fortran", "f77", "f90"]:

@@ -1,3 +1,4 @@
 .env
 .venv/
-.early.coverage
+__pycache__/
+*.py[cod]

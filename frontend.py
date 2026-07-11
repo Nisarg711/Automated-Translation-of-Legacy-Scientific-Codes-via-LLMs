@@ -371,13 +371,15 @@ if 'username' not in st.session_state:
 def sync_auth_from_cookie():
     token = cookies.get("auth_token")
     if not token:
-        if st.session_state.get('role') == "guest" and st.session_state.get('authenticated'):
-            return
         st.session_state['authenticated'] = False
         st.session_state['role'] = None
         st.session_state['username'] = None
+        return 
+    if token == "guest":   
+        st.session_state['authenticated'] = True
+        st.session_state['role'] = "guest"
+        st.session_state['username'] = None
         return
-
     token_ok, token_data = verify_access_token(token)
     if token_ok:
         st.session_state['authenticated'] = True
@@ -472,7 +474,7 @@ def show_auth_page():
         # ---- Guest button ----
         st.markdown("<div class='guest-section'><div class='label'>or</div></div>", unsafe_allow_html=True)
         if st.button("Continue as Guest", use_container_width=True, key="guest_btn"):
-            cookies.pop("auth_token", None)
+            cookies["auth_token"] = "guest"   # sentinel value
             cookies.save()
             st.session_state['authenticated'] = True
             st.session_state['role'] = "guest"
@@ -748,7 +750,15 @@ def show_translator_ui():
 # ====================================================================================
 # PAGE ROUTER — auth gate
 # ====================================================================================
+if not cookies_ready:
+    st.markdown("<div style='display:flex;align-items:center;justify-content:center;height:60vh'><span style='color:#94a3b8;font-family:Inter,sans-serif;font-size:13px'>Loading...</span></div>", unsafe_allow_html=True)
+    st.stop()
+
 if st.session_state['authenticated']:
     show_translator_ui()
 else:
     show_auth_page()
+
+#here basically, when first render happens, cookies re not ready yet, leading to sync fxn
+#not getting called, due to which session state authenticated remains false leading to
+#log in page getting displayed for a sec. due to this, explicitly we neeed to handle cookie ready
