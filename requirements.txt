@@ -11,6 +11,7 @@ groq
 psutil
 psycopg2-binary
 pgvector
+langgraph-checkpoint-postgres
 sentence-transformers
 langchain_huggingface
 bcrypt

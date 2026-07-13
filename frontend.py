@@ -3,7 +3,7 @@ import os
 import uuid
 from tempbackend import app
 from tempbackend import parse_tests_from_string
-from auth import register_user, authenticate_user_with_token, verify_access_token
+from auth import register_user, authenticate_user_with_token, verify_access_token, upsert_thread, list_threads
 from streamlit_cookies_manager import EncryptedCookieManager
 
 st.set_page_config(page_title="Automated Legacy Code Translator", layout="wide")
@@ -14,11 +14,6 @@ cookies = EncryptedCookieManager(
 )
 
 cookies_ready = cookies.ready()
-
-# ------------------------------------------------------------------------------------
-# Custom CSS — typography, accent color, structural refinements, and auth page styles.
-# Base colors intentionally left to Streamlit's native light/dark theme switcher.
-# ------------------------------------------------------------------------------------
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@300;400;500;600&display=swap');
@@ -211,6 +206,7 @@ h2, h3 {
 """, unsafe_allow_html=True)
 
 LANGUAGES = ["Python", "C", "C++", "Java", "Fortran", "JavaScript", "Go", "Rust", "C#"]
+LANG_LOOKUP = {lang.lower(): lang for lang in LANGUAGES}  # e.g. "javascript" -> "JavaScript"
 
 # File extension:used to prefill the source language when a file is uploaded
 EXT_TO_LANG = {
@@ -239,30 +235,41 @@ def new_translation_session():
 
 
 def add_thread(thread_id, title="New Translation"):
+    """Purely local UI cache — no DB write here. A thread only gets persisted
+    to Postgres once a translation actually runs (see upsert_thread below),
+    so opening the app or clicking '+ New Translation' never litters the
+    sidebar with empty placeholder rows."""
     if thread_id not in st.session_state['translation_threads']:
-        st.session_state['translation_threads'][thread_id] = {
-            "title": title,
-            "source_lang": None,
-            "target_lang": None,
-            "source_code": "",
-            "translated_code": "",
-            "legacy_output": "",
-            "translated_output": ""
-        }
+        st.session_state['translation_threads'][thread_id] = {"title": title}
+
+
+def sync_threads_from_db():
+    """Refresh the sidebar's thread cache from Postgres — only meaningful for
+    logged-in users, since guest sessions have no durable identity to key on."""
+    if not st.session_state.get('user_id'):
+        return
+    for t in list_threads(st.session_state['user_id']):
+        st.session_state['translation_threads'].setdefault(t['thread_id'], {})['title'] = t['title']
+    
 
 
 def load_translation(thread_id):
-    """
-    TODO: once LangGraph persistence (MemorySaver / PostgresStore) is wired in,
-    swap this for something like:
-
-        res = app.get_state(config={"configurable": {"thread_id": thread_id}})
-        return res.values
-
-    For now it just reads back from in-memory session state (lost on refresh,
-    same limitation your chatbot would have without a real checkpointer).
-    """
-    return st.session_state['translation_threads'].get(thread_id, {})
+    """Pull the authoritative graph state back from the Postgres-backed
+    LangGraph checkpointer — this now survives refreshes and restarts."""
+    state = app.get_state(config={"configurable": {"thread_id": thread_id}})
+    values = state.values if state else {}
+    thread_meta = st.session_state['translation_threads'].get(thread_id, {})
+    return {
+        "title": thread_meta.get("title", "New Translation"),
+        "source_lang": values.get("inp_lang"),
+        "target_lang": values.get("target_lang"),
+        "source_code": values.get("input_code", ""),
+        "translated_code": values.get("translated_code", ""),
+        "legacy_output": values.get("legacy_output", ""),
+        "translated_output": values.get("translated_output", ""),
+        "attempt_count": values.get("attempt_count", 0),
+        "passed": values.get("passed"),
+    }
 
 
 def translate_code(code, source_lang, target_lang, thread_id, tests=[]) -> dict:
@@ -367,6 +374,9 @@ if 'role' not in st.session_state:
 if 'username' not in st.session_state:
     st.session_state['username'] = None
 
+if 'user_id' not in st.session_state:
+    st.session_state['user_id'] = None
+
 
 def sync_auth_from_cookie():
     token = cookies.get("auth_token")
@@ -374,23 +384,27 @@ def sync_auth_from_cookie():
         st.session_state['authenticated'] = False
         st.session_state['role'] = None
         st.session_state['username'] = None
-        return 
-    if token == "guest":   
+        st.session_state['user_id'] = None
+        return
+    if token == "guest":
         st.session_state['authenticated'] = True
         st.session_state['role'] = "guest"
         st.session_state['username'] = None
+        st.session_state['user_id'] = None
         return
     token_ok, token_data = verify_access_token(token)
     if token_ok:
         st.session_state['authenticated'] = True
         st.session_state['role'] = token_data.get('role', 'user')
         st.session_state['username'] = token_data.get('username')
+        st.session_state['user_id'] = token_data.get('sub')
     else:
         cookies.pop("auth_token", None)
         cookies.save()
         st.session_state['authenticated'] = False
         st.session_state['role'] = None
         st.session_state['username'] = None
+        st.session_state['user_id'] = None
 
 
 def reset_app_state():
@@ -402,6 +416,9 @@ def reset_app_state():
         del st.session_state[key]
 if cookies_ready:
     sync_auth_from_cookie()
+    if st.session_state.get('user_id') and not st.session_state.get('threads_synced'):
+        sync_threads_from_db()
+        st.session_state['threads_synced'] = True
 
 add_thread(st.session_state['thread_id'], st.session_state['title'])
 
@@ -524,6 +541,14 @@ def show_translator_ui():
                 st.session_state['title'] = loaded.get("title", "New Translation")
                 st.session_state['source_code'] = loaded.get("source_code", "")
                 st.session_state['translated_code'] = loaded.get("translated_code", "")
+                st.session_state['legacy_output'] = loaded.get("legacy_output", "")
+                st.session_state['translated_output'] = loaded.get("translated_output", "")
+                st.session_state['attempt_count'] = loaded.get("attempt_count", 0)
+                st.session_state['passed'] = loaded.get("passed")
+                if LANG_LOOKUP.get((loaded.get("source_lang") or "").lower()):
+                    st.session_state['source_lang_select'] = LANG_LOOKUP[loaded["source_lang"].lower()]
+                if LANG_LOOKUP.get((loaded.get("target_lang") or "").lower()):
+                    st.session_state['target_lang_select'] = LANG_LOOKUP[loaded["target_lang"].lower()]
                 st.rerun()
 
     # ------------------------------------------------------------------------------------
@@ -657,16 +682,9 @@ def show_translator_ui():
 
         title = f"{source_lang} → {target_lang}"
         st.session_state['title'] = title
-        st.session_state['translation_threads'][st.session_state['thread_id']] = {
-            "title": title,
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "source_code": active_code,
-            "translated_code": st.session_state['translated_code'],
-            "tests": st.session_state['tests'],
-            "attempt_count": st.session_state["attempt_count"],
-            "passed": st.session_state['passed']
-        }
+        st.session_state['translation_threads'][st.session_state['thread_id']] = {"title": title}
+        if st.session_state.get('user_id'):
+            upsert_thread(st.session_state['thread_id'], st.session_state['user_id'], title, source_lang, target_lang)
         st.rerun()
 
     # ------------------------------------------------------------------------------------

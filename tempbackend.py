@@ -5,10 +5,11 @@ from langchain_groq import ChatGroq
 from langgraph.graph.message import add_messages
 from langgraph.graph import START, END,StateGraph
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg_pool import ConnectionPool
 # langchain_huggingface and sentence_transformers are lazy-imported in _get_embedding_model()
 # to avoid loading PyTorch (~200MB) at startup — critical for Render's 512MB free tier
-from dotenv import load_dotenv  
+from dotenv import load_dotenv
 import os
 import re
 import time
@@ -20,7 +21,6 @@ from huggingface_hub import InferenceClient
 from openai import OpenAI
 from dotenv import load_dotenv
 from groq import Groq
-from langgraph.checkpoint.memory import InMemorySaver
 import psycopg2
 from pgvector.psycopg2 import register_vector
 
@@ -941,7 +941,15 @@ graph.add_edge("retrieve", "navigator")
 graph.add_edge("navigator", "driver")
 graph.add_edge("driver", "run_tests")   # loop back
 
-checkpointer = InMemorySaver()
+#The psycopg_pool package is an optional, 
+# highly performant connection pool library built for Psycopg 3. It maintains a cache of open PostgreSQL database connections to minimize latency, eliminate overhead from frequently creating new connections, and support high-concurrency environments
+_checkpoint_pool = ConnectionPool(
+    conninfo=os.environ["NEON_DATABASE_URL"],
+    max_size=20,
+    kwargs={"autocommit": True, "prepare_threshold": 0},
+)
+checkpointer = PostgresSaver(_checkpoint_pool)
+checkpointer.setup()  # idempotent — creates langgraph's checkpoint tables if missing
 app = graph.compile(checkpointer=checkpointer)
 
 # import uuid

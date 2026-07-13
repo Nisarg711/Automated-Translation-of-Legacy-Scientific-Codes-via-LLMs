@@ -41,3 +41,21 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- ------------------------------------------------------------------------------------
+-- Translation thread metadata — sidebar list, scoped per user.
+-- The actual graph state (code, feedback, attempts) lives in LangGraph's own
+-- checkpoint tables (created automatically by PostgresSaver.setup()).
+-- ------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS translation_threads (
+    thread_id UUID PRIMARY KEY,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'New Translation',
+    source_lang TEXT,
+    target_lang TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS translation_threads_user_id_idx
+ON translation_threads (user_id, updated_at DESC);
