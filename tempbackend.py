@@ -983,12 +983,18 @@ graph.add_edge("retrieve", "navigator")
 graph.add_edge("navigator", "driver")
 graph.add_edge("driver", "run_tests")   # loop back
 
-#The psycopg_pool package is an optional, 
+#The psycopg_pool package is an optional,
 # highly performant connection pool library built for Psycopg 3. It maintains a cache of open PostgreSQL database connections to minimize latency, eliminate overhead from frequently creating new connections, and support high-concurrency environments
 _checkpoint_pool = ConnectionPool(
     conninfo=os.environ["NEON_DATABASE_URL"],
     max_size=20,
     kwargs={"autocommit": True, "prepare_threshold": 0},
+    # Neon suspends/drops idle connections server-side; without a check
+    # callback, getconn() never notices and hands out a dead socket, which
+    # then blows up as "SSL connection has been closed unexpectedly" on
+    # whatever query runs first (see auth.py's get_db_connection for the
+    # same failure mode on the psycopg2 pool).
+    check=ConnectionPool.check_connection,
 )
 checkpointer = PostgresSaver(_checkpoint_pool)
 checkpointer.setup()  # idempotent — creates langgraph's checkpoint tables if missing

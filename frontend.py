@@ -215,6 +215,13 @@ EXT_TO_LANG = {
     "js": "JavaScript", "go": "Go", "rs": "Rust", "cs": "C#",
 }
 
+AVAILABLE_MODELS = {
+    "Llama 3.3 70B (Groq)": {"provider": "groq", "model_id": "llama-3.3-70b-versatile"},
+    "Llama 3.1 8B Fast (Groq)": {"provider": "groq", "model_id": "llama-3.1-8b-instant"},
+    "GPT-OSS 120B (OpenRouter)": {"provider": "groq", "model_id": "openai/gpt-oss-120b"},
+    "Qwen 3 27B (OpenRouter)": {"provider": "groq", "model_id": "qwen/qwen3-27b"},
+}
+
 def generate_thread_id():
     return str(uuid.uuid4())
 
@@ -272,7 +279,7 @@ def load_translation(thread_id):
     }
 
 
-def translate_code(code, source_lang, target_lang, thread_id, tests=[]) -> dict:
+def translate_code(code, source_lang, target_lang, thread_id, tests=[], provider="groq", model_id="llama-3.3-70b-versatile") -> dict:
     inputs= {
             "input_code": code,
             "inp_lang": source_lang.lower(),
@@ -286,9 +293,9 @@ def translate_code(code, source_lang, target_lang, thread_id, tests=[]) -> dict:
     config={
             "configurable": {
                 "thread_id": thread_id,
-                "provider": "groq",
+                "provider": provider,
                 # "model_id": "llama-3.3-70b-versatile",
-                "model_id": "openai/gpt-oss-120b",
+                "model_id": model_id,
                 # "model_id":"qwen/qwen3.6-27b",
                 # "model_id": "llama-3.1-8b-instant",
                 "tests": tests,   # placeholder until UI supports test input
@@ -535,7 +542,14 @@ def show_translator_ui():
         if st.button("➕ New Translation", type="primary", use_container_width=True):
             new_translation_session()
             st.rerun()
-
+        st.markdown("<div style='margin-top:16px;margin-bottom:6px;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;font-family:Inter,sans-serif'>Model</div>", unsafe_allow_html=True)
+        selected_model_name = st.selectbox(
+            "Model",
+            options=list(AVAILABLE_MODELS.keys()),
+            key="selected_model",
+            label_visibility="collapsed"
+        )
+        selected_model = AVAILABLE_MODELS[selected_model_name]
         st.markdown("<div style='margin-top:20px;margin-bottom:6px;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;font-family:Inter,sans-serif'>History</div>", unsafe_allow_html=True)
 
         for thid, info in reversed(list(st.session_state['translation_threads'].items())):
@@ -677,8 +691,12 @@ def show_translator_ui():
         st.session_state['source_code'] = active_code
 
         result = translate_code(
-                active_code, source_lang, target_lang, st.session_state['thread_id'], st.session_state['tests']
-            )
+                    active_code, source_lang, target_lang,
+                    st.session_state['thread_id'],
+                    st.session_state['tests'],
+                    provider=selected_model["provider"],
+                    model_id=selected_model["model_id"]
+                    )
         st.session_state['translated_code'] = result["translated_code"]
         st.session_state['attempt_count'] = result["attempt_count"]
         st.session_state['passed'] = result["passed"]
