@@ -27,11 +27,27 @@ def get_db_connection():
     """Check out a pooled connection. Pair with release_db_connection(), not conn.close().
     No register_vector() here — unlike tempbackend.py, none of this module's
     tables (users, translation_threads) store vector columns, and calling it
-    costs its own catalog round-trip on every checkout for no benefit."""
-    return _pool.getconn()
+    costs its own catalog round-trip on every checkout for no benefit.
+
+    Neon suspends its compute (and drops TCP connections) after periods of
+    idleness, which leaves stale connections sitting in the pool with no
+    client-side signal that they're dead. Pre-ping each checkout and discard
+    anything the server has already hung up on, instead of handing callers
+    a connection that will blow up on their first query."""
+    conn = _pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return conn
+    except psycopg2.OperationalError:
+        _pool.putconn(conn, close=True)
+        return _pool.getconn()
 
 def release_db_connection(conn):
-    _pool.putconn(conn)
+    """Return a connection to the pool, or discard it if the server has closed
+    it out from under us — putting a dead connection back would just hand it
+    to the next caller, who'd hit the same OperationalError."""
+    _pool.putconn(conn, close=conn.closed != 0)
 
 def create_access_token(payload: dict) -> str:
     data = payload.copy()

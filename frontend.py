@@ -408,7 +408,12 @@ def sync_auth_from_cookie():
 
 
 def reset_app_state():
-    preserved_prefixes = ("EncryptedCookieManager",)
+    # streamlit_cookies_manager stores its cookie-sync bridge state under
+    # "CookieManager.*" keys (queue + the keyed custom component's cached
+    # return value) — wiping those loses the JS iframe's last reported
+    # value, and it won't resend on its own, so cookies.ready() gets stuck
+    # False forever and the page router hangs on "Loading...".
+    preserved_prefixes = ("EncryptedCookieManager", "CookieManager")
     preserved_keys = {"auth_token"}
     for key in list(st.session_state.keys()):
         if key in preserved_keys or key.startswith(preserved_prefixes):

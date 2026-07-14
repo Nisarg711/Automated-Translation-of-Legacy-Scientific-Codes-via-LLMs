@@ -49,6 +49,32 @@ def embed_text(text: str) -> np.ndarray:
     embedding = _get_embedding_model().embed_query(text)
     return embedding
 
+def generate_hypothetical_navigator_analysis(
+    feedback: list,
+    inp_lang: str,
+    target_lang: str,
+    provider: str,
+    model_id: str
+) -> str:
+    first_fail = feedback[0]
+    expected = first_fail.get('expected', '')[:150]
+    actual = first_fail.get('actual', '')[:200]
+
+    hyde_prompt = f"""A {inp_lang} to {target_lang} translation failed:
+- Expected: {expected}
+- Actual: {actual}
+
+Output ONLY a JSON diagnosis in this exact format, nothing else:
+{{
+  "error_summary": "<one sentence describing what type of translation error this is>",
+  "root_cause": "<technical explanation of why {inp_lang} and {target_lang} behave differently here>",
+  "fix_hints": ["<specific fix 1>", "<specific fix 2>"]
+}}"""
+
+    result = generate_code(hyde_prompt, provider, model_id)
+    # extract just the JSON part
+    json_match = re.search(r'\{[\s\S]*\}', result or "")
+    return json_match.group(0).strip() if json_match else result.strip()
 
 def get_bm25_index(language_pair: str):
     conn = get_db_connection()
@@ -719,25 +745,44 @@ def retrieve_similar_experiences(
 def retrieve_node(state:TranslationState,config:RunnableConfig)->dict:
     '''
      runs before navigator, queries vector store, injects results into state
+     Uses HyDE: generates a hypothetical navigator analysis from the current
+    feedback, then embeds that for retrieval — bridges the query/document
+    space mismatch between raw feedback text and stored navigator analyses.
     '''
     language_pair = f"{state['inp_lang']}→{state['target_lang']}"
-    
-    # use the current navigator analysis as query — but wait,
-    # navigator hasn't run yet on attempt 0, so state["navigator_analysis"] is empty.
-    # instead use the test feedback as the retrieval query — it describes
-    # what went wrong in concrete terms (expected vs actual output diff)
-    first_fail = state["feedback"][0]
-    query = f"expected '{first_fail['expected'][:100]}' but got '{first_fail['actual'][:150]}'"
-    if not query.strip():
-        print("[retrieve_node] query is empty — returning early")  # confirm this is the exit point
-        return {"retrieved_context": []}
-    
+    provider = config["configurable"]["provider"]
+    model_id = config["configurable"]["model_id"]
+    if not state["feedback"]:
+        return {"retrieved_context": []}  
+   
+    hypothetical_analysis=generate_hypothetical_navigator_analysis(
+        feedback=state['feedback'],
+        inp_lang=state['inp_lang'],
+        target_lang=state['target_lang'],
+        provider=provider,
+        model_id=model_id
+    )
+
+    if state.get("navigator_analysis") and state['navigator_analysis'].strip():
+        query=state['navigator_analysis']
+        print("[retrieve_node] Using real navigator analysis from previous attempt")
+    else:
+        query=generate_hypothetical_navigator_analysis(
+        feedback=state['feedback'],
+        inp_lang=state['inp_lang'],
+        target_lang=state['target_lang'],
+        provider=provider,
+        model_id=model_id
+    )
+    print("[retrieve_node] Using HyDE — first failure, no prior analysis")
+
     experiences = retrieve_similar_experiences(
         language_pair=language_pair,
-        navigator_analysis=query,   # feedback as proxy for navigator analysis
-        k=5 
+        navigator_analysis=query, 
+        k=5
     )
-    
+
+    print(f"[retrieve_node] Retrieved {len(experiences)} experiences")
     return {"retrieved_context": experiences}
 
 def extract_error_snippet(navigator_analysis: str, translated_code: str) -> str:
@@ -909,9 +954,7 @@ def route_after_tests(state: TranslationState) -> str:
         return "end"
     if state["attempt_count"] >= state["max_attempts"]:
         return "end"
-    if state["attempt_count"] == 0:
-        return "retrieve"   # first failure — retrieve context before navigator
-    return "fix"            # subsequent failures — go straight to navigator
+    return "retrieve"          # subsequent failures — go straight to navigator
 
 graph = StateGraph(TranslationState)
 
@@ -934,7 +977,6 @@ graph.add_conditional_edges(
     {
         "end": "store",      # always go to store first, store decides whether to write
         "retrieve": "retrieve",
-        "fix": "navigator"
     }
 )
 graph.add_edge("retrieve", "navigator")
@@ -951,6 +993,7 @@ _checkpoint_pool = ConnectionPool(
 checkpointer = PostgresSaver(_checkpoint_pool)
 checkpointer.setup()  # idempotent — creates langgraph's checkpoint tables if missing
 app = graph.compile(checkpointer=checkpointer)
+
 
 # import uuid
 
