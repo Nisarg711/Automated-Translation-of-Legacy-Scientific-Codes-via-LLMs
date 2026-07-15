@@ -289,6 +289,8 @@ def translate_code(code, source_lang, target_lang, thread_id, tests=[], provider
             "retrieved_context": [],    # NEW
             "error_snippet": "",        # NEW
             "last_feedback": [],        # NEW
+            "tests_passed": 0,
+            "total_tests": 0,
         }
     config={
             "configurable": {
@@ -384,6 +386,10 @@ if 'username' not in st.session_state:
 if 'user_id' not in st.session_state:
     st.session_state['user_id'] = None
 
+if 'tests_passed' not in st.session_state:
+    st.session_state['tests_passed'] = 0
+if 'total_tests' not in st.session_state:
+    st.session_state['total_tests'] = 0
 
 def sync_auth_from_cookie():
     token = cookies.get("auth_token")
@@ -406,7 +412,12 @@ def sync_auth_from_cookie():
         st.session_state['username'] = token_data.get('username')
         st.session_state['user_id'] = token_data.get('sub')
     else:
-        cookies.pop("auth_token", None)
+        # NOTE: streamlit_cookies_manager's CookieManager.__delitem__ checks
+        # `key in self._cookies` against the *prefixed* raw cookie dict while
+        # `key` here is unprefixed, so cookies.pop() never actually queues a
+        # deletion. Overwrite with an empty value instead — sync_auth_from_cookie's
+        # `if not token` check already treats that as logged out.
+        cookies["auth_token"] = ""
         cookies.save()
         st.session_state['authenticated'] = False
         st.session_state['role'] = None
@@ -532,7 +543,9 @@ def show_translator_ui():
 
         # Logout button
         if st.button("Logout", use_container_width=True, key="logout_btn"):
-            cookies.pop("auth_token", None)
+            # cookies.pop() is a no-op here (see note in sync_auth_from_cookie) —
+            # overwrite the cookie instead so the stale session token is actually cleared.
+            cookies["auth_token"] = ""
             cookies.save()
             reset_app_state()
             st.rerun()
@@ -689,7 +702,6 @@ def show_translator_ui():
 
     if translate_clicked:
         st.session_state['source_code'] = active_code
-
         result = translate_code(
                     active_code, source_lang, target_lang,
                     st.session_state['thread_id'],
@@ -697,13 +709,15 @@ def show_translator_ui():
                     provider=selected_model["provider"],
                     model_id=selected_model["model_id"]
                     )
+        st.session_state['tests_passed'] = result.get("tests_passed", 0)
+        st.session_state['total_tests'] = result.get("total_tests", 0)
         st.session_state['translated_code'] = result["translated_code"]
         st.session_state['attempt_count'] = result["attempt_count"]
         st.session_state['passed'] = result["passed"]
         st.session_state['legacy_output'] = result["legacy_output"]
         st.session_state['translated_output'] = result["translated_output"]
 
-        title = f"{source_lang} → {target_lang}"
+        title = uploaded_file.name if (uploaded_file is not None and uploaded_code) else f"{source_lang} → {target_lang}"
         st.session_state['title'] = title
         st.session_state['translation_threads'][st.session_state['thread_id']] = {"title": title}
         if st.session_state.get('user_id'):
@@ -718,14 +732,29 @@ def show_translator_ui():
 
         # Status badge
         attempts = st.session_state['attempt_count']
-        if st.session_state["passed"]:
-            st.markdown(f"""<span class='status-badge status-pass'>
-                ✓ Passed in {attempts} correction attempt{'s' if attempts != 1 else ''}
-            </span>""", unsafe_allow_html=True)
+        tests_passed = st.session_state.get('tests_passed', 0)
+        total_tests = st.session_state.get('total_tests', 0)
+
+        if total_tests > 0:
+            score = int((tests_passed / total_tests) * 100)
+            if st.session_state["passed"]:
+                st.markdown(f"""<span class='status-badge status-pass'>
+                    ✓ {score}% · {tests_passed}/{total_tests} tests passed · {attempts} attempt{'s' if attempts != 1 else ''}
+                </span>""", unsafe_allow_html=True)
+            else:
+                st.markdown(f"""<span class='status-badge status-fail'>
+                    ⚠ {score}% · {tests_passed}/{total_tests} tests passed · max attempts reached
+                </span>""", unsafe_allow_html=True)
         else:
-            st.markdown(f"""<span class='status-badge status-fail'>
-                ⚠ Max attempts reached ({attempts}) — translation may have issues
-            </span>""", unsafe_allow_html=True)
+            # no tests provided — show attempt count only
+            if st.session_state["passed"]:
+                st.markdown(f"""<span class='status-badge status-pass'>
+                    ✓ Passed in {attempts} attempt{'s' if attempts != 1 else ''}
+                </span>""", unsafe_allow_html=True)
+            else:
+                st.markdown(f"""<span class='status-badge status-fail'>
+                    ⚠ Max attempts reached ({attempts})
+                </span>""", unsafe_allow_html=True)
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 

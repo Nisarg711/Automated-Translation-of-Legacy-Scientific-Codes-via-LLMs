@@ -179,7 +179,8 @@ class TranslationState(TypedDict):
     retrieved_context:list
     error_snippet: str   # extracted from navigator's relevant_lines, used by store_node
     last_feedback: list   # stores feedback from last failed attempt before fix worked
-
+    tests_passed: int
+    total_tests: int
 
 # Step 1 — Define your State
 # Before any nodes, decide what data flows through the graph. Looking at your run_benchmark, the things that get read/written across phases are: input_code, inp_lang, target_lang, translated_code, test_results/feedback, attempt_count, max_attempts, passed. Define this as a TypedDict (this is your single source of truth the whole graph reads/writes — same role as results dict in your notebook, but shared across nodes instead of local to one function).
@@ -192,7 +193,8 @@ def get_working_filepath(target_lang: str) -> str:  #This is used for temporary 
     return path
 
 def get_file_extension(language):
-    extensions = {"python": ".py", "c": ".c", "cpp": ".cpp", "c++": ".cpp", "java": ".java", "go": ".go", "rust": ".rs","fortran": ".f"}
+    extensions = {"python": ".py", "c": ".c", "cpp": ".cpp", "c++": ".cpp", "java": ".java", "go": ".go", "rust": ".rs","fortran": ".f",
+                   "javascript": ".js", "js": ".js"}
     return extensions.get(language.lower(), ".txt")
 
 def extract_code(llm_output: str) -> str:
@@ -419,7 +421,6 @@ def run_program(language, filepath, input_data, timeout=5):
             else:
                 compiler = "g++"
                 std_flag = "-std=c++17"
-
             comp = subprocess.run(
                 [compiler, std_flag, filepath, "-o", exe],
                 capture_output=True, text=True
@@ -432,7 +433,16 @@ def run_program(language, filepath, input_data, timeout=5):
                 cwd=os.path.dirname(filepath)
             )
             return res.stdout.strip(), res.stderr if res.returncode != 0 else None
-            
+        
+        elif lang in ["javascript", "js"]:
+            res = subprocess.run(
+                ["node", filepath],
+                input=input_data,
+                text=True,
+                capture_output=True,
+                timeout=timeout
+            )
+            return res.stdout.strip(), res.stderr if res.returncode != 0 else None
         elif lang in ["fortran", "f77", "f90"]:
             exe = "./a.out"
             comp = subprocess.run(["gfortran", filepath, "-o", exe], capture_output=True, text=True)
@@ -628,7 +638,9 @@ def run_tests_node(state: TranslationState, config: RunnableConfig) -> dict:
         "passed": len(feedback) == 0,
         "last_feedback": feedback if len(feedback) > 0 else state.get("last_feedback", []),
         "legacy_output":"\n".join(legacy_blocks),
-        "translated_output":"\n".join(translated_blocks)
+        "translated_output":"\n".join(translated_blocks),
+        "tests_passed": len(tests) - len(feedback),  # NEW
+        "total_tests": len(tests),                      # NEW
     }
 
 
@@ -800,11 +812,30 @@ def extract_error_snippet(navigator_analysis: str, translated_code: str) -> str:
         # fallback: return first 30 lines if JSON parsing fails
         return "\n".join(translated_code.splitlines()[:30])
     
+def _cleanup_temp_files(state: TranslationState) -> None:
+    """
+    Deletes server-side temp files created during this translation run.
+    Called at the end of store_node (last node before END) so files
+    persist long enough for all nodes to read/write them, but don't
+    accumulate on disk across many translation runs.
+    """
+    for path_key in ["input_path", "working_filepath"]:
+        path = state.get(path_key, "")
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+                for suffix in [".out", ".class"]:
+                    compiled = path + suffix
+                    if os.path.exists(compiled):
+                        os.remove(compiled)
+            except OSError as e:
+                print(f"[cleanup] Failed to remove {path}: {e}")
 
 def store_node(state: TranslationState, config: RunnableConfig) -> dict:
     # only store if a fix was actually needed — attempt_count=0 means
     # first translation passed, nothing useful to store
     if state["attempt_count"] == 0:
+        _cleanup_temp_files(state)
         return {}
     
     language_pair = f"{state['inp_lang']}→{state['target_lang']}"
@@ -824,9 +855,9 @@ def store_node(state: TranslationState, config: RunnableConfig) -> dict:
         test_feedback=str(state['last_feedback']),
         attempt_number=state["attempt_count"]
     )
-    
+    _cleanup_temp_files(state)
     return {}   # store_node doesn't update any state field
- 
+
 def navigator_node(state: TranslationState, config: RunnableConfig) -> dict:
     provider = config["configurable"]["provider"]
     model_id = config["configurable"]["model_id"]
