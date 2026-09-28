@@ -901,7 +901,6 @@ Provide STRICT JSON with actionable fix hints:
   "fix_hints": ["hint 1", "hint 2"],
   "relevant_lines": {{"start": <integer>, "end": <integer>}}
 }}
-
 "relevant_lines" must point to the EXACT lines of the error in the translated code.
 If root_cause mentions 'main function', relevant_lines must point to where main() 
 starts and ends in the translated code — NOT to other functions.

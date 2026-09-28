@@ -318,12 +318,12 @@ def translate_code(code, source_lang, target_lang, thread_id, tests=[], provider
             node_name=list(updates.keys())[0]
             message = NODE_MESSAGES.get(node_name, f"Running {node_name}...")
             st.write(message)
-        if node_name=="run_tests":
-            node_state = updates[node_name]
-            if not node_state.get("passed", True) and node_state.get("feedback"):
-                attempt=node_state.get("attempt_count",0)
-                failed = len(node_state.get("feedback", []))
-                st.write(f"   ↳ {failed} test(s) failed — attempt {attempt + 1}")
+            if node_name=="run_tests":
+                node_state = updates[node_name]
+                if not node_state.get("passed", True) and node_state.get("feedback"):
+                    attempt=node_state.get("attempt_count",0)
+                    failed = len(node_state.get("feedback", []))
+                    st.write(f"   ↳ {failed} test(s) failed — attempt {attempt + 1}")
 
     final_state=app.get_state({"configurable":{"thread_id":thread_id}})
     status.update(label="✅ Translation complete!", state="complete", expanded=False)

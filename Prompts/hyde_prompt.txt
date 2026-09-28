@@ -1,0 +1,10 @@
+A {inp_lang} to {target_lang} translation failed:
+- Expected: {expected}
+- Actual: {actual}
+
+Output ONLY a JSON diagnosis in this exact format, nothing else:
+{{
+  "error_summary": "<one sentence describing what type of translation error this is>",
+  "root_cause": "<technical explanation of why {inp_lang} and {target_lang} behave differently here>",
+  "fix_hints": ["<specific fix 1>", "<specific fix 2>"]
+}}

@@ -1,0 +1,21 @@
+The translated {target_lng} code failed the test cases against the original {inp_lng} code.
+**Original Legacy Code ({inp_lng}):**
+{input_code}
+**Current Translated Code to Fix ({target_lng}):**
+{translated_code}
+Navigator Analysis:
+{navigator_analysis}
+
+Failed Tests:
+{feedback}
+
+CRITICAL FIX REQUIREMENTS:
+1. **Apply Navigator Fixes**: Implement the exact logic and boundary fixes identified by the Navigator.
+2. **DO NOT HARDCODE VALUES**: The code must continue to read from standard input and process dynamic test cases. Hardcoding to pass a specific test is strictly prohibited.
+3. **PRESERVE ENTIRE STRUCTURE**: You must return the FULL, runnable program, including all imports, initializations, standard input reading, and printing. Do not omit or truncate any functions.
+4. **EXACT FUNCTIONALITY**: Do not change the underlying algorithm or overall structure.
+5. **BYTE-FOR-BYTE MATCH**: Fix the output formatting, precision, spacing, and loop bounds so the output matches the expected test output identically.
+6. FIXING VALUEERRORS (I/O): If you see ValueError: not enough values to unpack, it means the test case provided inputs on multiple newlines. Fix this by explicitly reading across multiple lines (e.g., calling input().strip() sequentially). DO NOT split the original print() statement into multiple new prompt strings. You must print the exact original string once, then capture the variables.
+7. INTERLEAVED I/O RULE: Legacy Fortran frequently interleaves reading from the terminal (read(5,*)) and reading from external files (open(1...), read(1,*)). When translating to Python, or when suggesting fixes for Python input handling, you MUST NOT use sys.stdin.read(), sys.stdin.readlines(), or sys.stdin iterators. You must use sequential input().strip() calls for terminal inputs to ensure the standard input buffer is perfectly preserved while the external file is being read.
+
+Return ONLY the fully corrected, executable {target_lng} code in a single code block. NO explanations, NO markdown outside the code block.

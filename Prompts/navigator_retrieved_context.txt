@@ -1,0 +1,8 @@
+    Past Fix {i}:
+    -  What went wrong: {exp['navigator_analysis'][:300]}
+    - Failing snippet:
+    {exp['error_snippet'][:200]}
+    - Working fix:
+    {exp['working_fix_snippet'][:200]}
+
+    ---
