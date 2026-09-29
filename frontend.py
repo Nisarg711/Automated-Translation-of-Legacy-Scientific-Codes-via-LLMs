@@ -4,6 +4,10 @@ import uuid
 from tempbackend import app
 from tempbackend import parse_tests_from_string
 from auth import register_user, authenticate_user_with_token, verify_access_token, upsert_thread, list_threads
+# streamlit_cookies_manager still uses @st.cache, which newer Streamlit versions removed.
+# It only caches a key-derivation function, so st.cache_data is a safe drop-in.
+if not hasattr(st, "cache"):
+    st.cache = st.cache_data
 from streamlit_cookies_manager import EncryptedCookieManager
 
 st.set_page_config(page_title="Automated Legacy Code Translator", layout="wide")
